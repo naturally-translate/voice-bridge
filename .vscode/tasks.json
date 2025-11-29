@@ -36,51 +36,6 @@
       "icon": {
         "id": "compass"
       }
-    },
-    {
-      "label": "MUIv6",
-      "type": "shell",
-      "command": "cd package-tests/component-driver-mui-v6-test && pnpm start",
-      "isBackground": true,
-      "icon": {
-        "id": "compass"
-      }
-    },
-    {
-      "label": "MUIXv5",
-      "type": "shell",
-      "command": "cd package-tests/component-driver-mui-x-v5-test && pnpm start",
-      "isBackground": true,
-      "icon": {
-        "id": "compass"
-      }
-    },
-    {
-      "label": "MUIXv6",
-      "type": "shell",
-      "command": "cd package-tests/component-driver-mui-x-v6-test && pnpm start",
-      "isBackground": true,
-      "icon": {
-        "id": "compass"
-      }
-    },
-    {
-      "label": "MUIXv7",
-      "type": "shell",
-      "command": "cd package-tests/component-driver-mui-x-v7-test && pnpm start",
-      "isBackground": true,
-      "icon": {
-        "id": "compass"
-      }
-    },
-    {
-      "label": "MUIXv8",
-      "type": "shell",
-      "command": "cd package-tests/component-driver-mui-x-v8-test && pnpm start",
-      "isBackground": true,
-      "icon": {
-        "id": "compass"
-      }
     }
   ]
 }
