@@ -39,5 +39,7 @@
     "editor.codeActionsOnSave": {
       "source.removeUnusedImports": "never"
     }
-  }
+  },
+  "claudeCode.initialPermissionMode": "acceptEdits",
+  "claudeCode.environmentVariables": []
 }
