@@ -5,10 +5,10 @@ Ship a React/MUI web app that configures sessions, streams audio, and displays t
 
 ## Inputs
 - GraphQL + WebSocket endpoints from Phase 06.
-- Vite React scaffold (`projects/web-client`).
+- Vite React scaffold (`projects/client-app`).
 
 ## Tasks
-- [ ] Create Vite + React + TS app in `projects/web-client/`; configure MUI theme.
+- [ ] Create Vite + React + TS app in `projects/client-app/`; configure MUI theme.
 - [ ] Implement core components: `TranscriptionView`, `TranslationView` (3 panels), `AudioControls`, `ModelStatus`, `ServerConnection`.
 - [ ] Set up Apollo Client with subscriptions for real-time text/status.
 - [ ] Implement Web Audio capture + AudioWorklet for low-latency microphone input; stream to binary WebSocket.
@@ -20,7 +20,7 @@ Ship a React/MUI web app that configures sessions, streams audio, and displays t
 
 ## Acceptance
 - App connects to server, streams microphone audio, displays live transcription/translation, and plays back per-language audio.
-- Basic component tests pass (`pnpm test --filter web-client` or equivalent).
+- Basic component tests pass (`pnpm test --filter client-app` or equivalent).
 - Connection errors and model download states are surfaced in UI.
 
 ## Constraints / Notes
