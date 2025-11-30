@@ -11,7 +11,7 @@ Deliver streaming VAD and ASR with audio utilities to prep inputs for the pipeli
 ## Tasks
 - [ ] Implement `SileroVAD.ts` using `@ricky0123/vad-node` (or equivalent) with streaming chunk support.
 - [ ] Implement `DistilWhisperASR.ts` using Transformers.js with model `distil-whisper/distil-large-v3`.
-- [ ] Add audio utilities under `projects/server/src/audio/`: `AudioBuffer.ts` (circular), `AudioConverter.ts` (format conversion), `AudioResampler.ts` (16kHz for ASR).
+- [ ] Add audio utilities under `projects/api/src/audio/`: `AudioBuffer.ts` (circular), `AudioConverter.ts` (format conversion), `AudioResampler.ts` (16kHz for ASR).
 - [ ] Create audio fixtures and boundary tests for VAD (speech vs silence) and ASR (short utterance).
 - [ ] Ensure resampling/mono conversion is consistent before ASR.
 
@@ -22,7 +22,7 @@ Deliver streaming VAD and ASR with audio utilities to prep inputs for the pipeli
 ## Acceptance
 - `pnpm test --filter vad` and `--filter asr` pass with fixture coverage.
 - ASR produces partial + final transcripts for a sample WAV; VAD drops silence chunks.
-- `pnpm -C projects/server tsc --noEmit` still passes.
+- `pnpm -C projects/api tsc --noEmit` still passes.
 
 ## Constraints / Notes
 - Keep ASR streaming chunks aligned (e.g., 20–40ms frames) to minimize latency.

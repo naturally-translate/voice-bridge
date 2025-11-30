@@ -13,7 +13,7 @@ Short, agent-friendly plan. Full historical detail is preserved at `plans/archiv
 ## Goal & Scope
 
 - Build a real-time English → {es, zh, ko} translator with **XTTS-v2 intonation matching** as the differentiator.
-- Architecture: Node.js server with `worker_threads`, React web client (browser), GraphQL control + binary WebSocket audio.
+- Architecture: Node.js API gateway (`projects/api`, aka api-gateway) using `worker_threads`; React web client (browser); GraphQL control + binary WebSocket audio.
 - Models: Distil-Whisper V3 (ASR), NLLB-200 distilled 600M (translation), XTTS-v2 Python microservice (TTS), Silero VAD.
 
 ## Active Phase
@@ -37,7 +37,7 @@ Short, agent-friendly plan. Full historical detail is preserved at `plans/archiv
 
 ## Key Decisions (see archive for rationale)
 
-- Node.js server with `worker_threads`; React web client in browser.
+- API gateway (Node.js) with `worker_threads`; React web client in browser.
 - XTTS-v2 runs as a Python FastAPI microservice; TypeScript talks via HTTP.
 - Per-language isolation: separate workers and audio channels; fire-and-forget (one language failing does not block others).
 - On-demand model downloads to `models/` via Transformers.js.
@@ -48,7 +48,7 @@ Short, agent-friendly plan. Full historical detail is preserved at `plans/archiv
 
 - XTTS latency/quality on Apple Silicon could exceed target (<4s end-to-end).
 - Memory pressure when 3× NLLB + ASR + TTS run concurrently.
-- Binary audio streaming correctness (chunking/resampling) across client/server.
+- Binary audio streaming correctness (chunking/resampling) across client/API gateway.
 
 ## Immediate Next Steps (agents)
 

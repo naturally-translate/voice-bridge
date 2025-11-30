@@ -8,7 +8,7 @@ Expose the pipeline over GraphQL (control/text) and binary WebSockets (audio in/
 - Schema draft for queries/mutations/subscriptions.
 
 ## Tasks
-- [ ] Define `projects/server/src/schema/schema.graphql` with queries (`serverInfo`, `availableModels`, `session`, `activeSessions`), mutations (`createSession`, `stopSession`, `uploadAudioFile`, `downloadModel`), and subscriptions (`streamTranscription`, `streamTranslation`, `sessionStatus`).
+- [ ] Define `projects/api/src/schema/schema.graphql` with queries (`serverInfo`, `availableModels`, `session`, `activeSessions`), mutations (`createSession`, `stopSession`, `uploadAudioFile`, `downloadModel`), and subscriptions (`streamTranscription`, `streamTranslation`, `sessionStatus`).
 - [ ] Set up Apollo Server + Express + `graphql-ws` subscriptions.
 - [ ] Build binary WebSocket server on a dedicated port for audio: one input socket + per-language output sockets.
 - [ ] Implement `SessionManager.ts` for lifecycle tracking and cleanup.
