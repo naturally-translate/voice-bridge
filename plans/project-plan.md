@@ -102,11 +102,16 @@ graph TB
 
         MM[Model Manager]
         PE[Prosody Extractor]
+        RS[Recording Storage<br/>IRecordingStorage]
     end
 
     subgraph "External Services"
         XTTS[XTTS-v2 Python Server<br/>FastAPI + TTS Library]
         HF[Hugging Face Hub<br/>Model Downloads]
+    end
+
+    subgraph "Storage Layer"
+        FS[Local Filesystem<br/>Recordings + Transcripts]
     end
 
     UI --> AC
@@ -145,9 +150,15 @@ graph TB
 
     MM -->|Download Models| HF
 
+    TP -->|Audio + Transcripts| RS
+    PE -->|Speaker Embedding| RS
+    RS -->|Write Files| FS
+
     style TP fill:#ff9800
     style PE fill:#ff9800
     style XTTS fill:#e91e63
+    style RS fill:#9c27b0
+    style FS fill:#9c27b0
 ```
 
 ### Component Interaction Sequence
@@ -163,20 +174,24 @@ sequenceDiagram
     participant T as Translation Workers
     participant TTS as TTS Workers
     participant XTTS as XTTS-v2 Server
+    participant RS as Recording Storage
     participant Audio as Audio Output
 
     U->>UI: Start speaking
     UI->>API: Subscribe to streamTranscription
     UI->>API: Subscribe to streamTranslation (per language)
     UI->>AudioWS: Connect audio output channels (per language)
+    API->>RS: createSession(name, config)
 
     loop Audio Stream
         UI->>VAD: Send audio chunks (WebSocket binary)
+        VAD->>RS: appendInputAudio(chunk)
         VAD->>VAD: Detect voice activity
 
         alt Voice detected
             VAD->>ASR: Forward audio
             ASR->>ASR: Transcribe to English text
+            ASR->>RS: appendInputTranscript(utterance)
             ASR->>API: Emit transcription event
             API->>UI: Stream English text
 
@@ -184,14 +199,17 @@ sequenceDiagram
 
             par Parallel Translation (Fire-and-Forget)
                 T->>T: Translate to Spanish
+                T->>RS: appendOutputTranscript(es, utterance)
                 T->>API: Emit Spanish text
                 API->>UI: Stream Spanish text
             and
                 T->>T: Translate to Chinese
+                T->>RS: appendOutputTranscript(zh, utterance)
                 T->>API: Emit Chinese text
                 API->>UI: Stream Chinese text
             and
                 T->>T: Translate to Korean
+                T->>RS: appendOutputTranscript(ko, utterance)
                 T->>API: Emit Korean text
                 API->>UI: Stream Korean text
             end
@@ -200,6 +218,7 @@ sequenceDiagram
                 T->>TTS: Spanish text + speaker embedding
                 TTS->>XTTS: Synthesize (ES, embedding)
                 XTTS->>TTS: Spanish audio with matched intonation
+                TTS->>RS: appendOutputAudio(es, audio)
                 TTS->>AudioWS: Emit Spanish audio (dedicated channel)
                 AudioWS->>UI: Stream Spanish audio
                 UI->>Audio: Play Spanish audio
@@ -207,6 +226,7 @@ sequenceDiagram
                 T->>TTS: Chinese text + speaker embedding
                 TTS->>XTTS: Synthesize (ZH, embedding)
                 XTTS->>TTS: Chinese audio with matched intonation
+                TTS->>RS: appendOutputAudio(zh, audio)
                 TTS->>AudioWS: Emit Chinese audio (dedicated channel)
                 AudioWS->>UI: Stream Chinese audio
                 UI->>Audio: Play Chinese audio
@@ -214,6 +234,7 @@ sequenceDiagram
                 T->>TTS: Korean text + speaker embedding
                 TTS->>XTTS: Synthesize (KO, embedding)
                 XTTS->>TTS: Korean audio with matched intonation
+                TTS->>RS: appendOutputAudio(ko, audio)
                 TTS->>AudioWS: Emit Korean audio (dedicated channel)
                 AudioWS->>UI: Stream Korean audio
                 UI->>Audio: Play Korean audio
@@ -223,6 +244,9 @@ sequenceDiagram
 
     U->>UI: Stop speaking
     UI->>API: Stop pipeline
+    API->>RS: finalizeSession(sessionId)
+    RS->>RS: Concatenate audio files
+    RS->>RS: Generate transcript formats
 ```
 
 ### Data Flow: Voice Input to Translated Output
@@ -875,6 +899,7 @@ graph TB
             Models[ML Models Cache<br/>~6GB]
             Sessions[Session Files<br/>Audio Input/Output]
             ServerConfig[Server Config<br/>Model Selections]
+            Recordings[Recording Storage<br/>yyyy-mm/session-folders]
         end
     end
 
@@ -915,15 +940,18 @@ graph TB
 
     AudioIO <--> Sessions
     Pipeline <--> Models
+    Pipeline -->|Audio + Transcripts| Recordings
     XTTS_Model <--> Models
 
     UI --> ClientConfig
     GQL_Server --> ServerConfig
+    GQL_Server <-->|List/Retrieve| Recordings
 
     style GQL_Server fill:#4caf50
     style XTTS_API fill:#e91e63
     style Models fill:#2196f3
     style UI fill:#ff9800
+    style Recordings fill:#9c27b0
 ```
 
 **Deployment Scenarios:**
@@ -959,6 +987,7 @@ graph TB
         Main --> ConfigTab[Configuration Tab]
         Main --> SessionTab[Session Tab]
         Main --> MonitorTab[Monitor Tab]
+        Main --> RecordingsTab[Recordings Tab]
 
         subgraph "Configuration Tab Components"
             ConfigTab --> ServerConfig[ServerConnectionConfig.tsx<br/>Server URL, Connection Status]
@@ -996,6 +1025,19 @@ graph TB
             TargetPanels --> KoreanPanel[KoreanPanel.tsx<br/>Text + Dedicated Audio Player]
         end
 
+        subgraph "Recordings Tab Components"
+            RecordingsTab --> RecordingsList[RecordingsList.tsx<br/>Browse Past Sessions]
+            RecordingsTab --> RecordingDetail[RecordingDetail.tsx<br/>View Selected Recording]
+
+            RecordingsList --> DateFilter[DateFilter.tsx<br/>Filter by Month]
+            RecordingsList --> SearchFilter[SearchFilter.tsx<br/>Search by Name]
+
+            RecordingDetail --> RecordingMeta[RecordingMetadata.tsx<br/>Duration, Languages, Date]
+            RecordingDetail --> TranscriptView[TranscriptViewer.tsx<br/>Timestamped Text]
+            RecordingDetail --> PlaybackControls[PlaybackControls.tsx<br/>Play/Pause/Seek]
+            RecordingDetail --> LanguageSelector[LanguageSelector.tsx<br/>Select Output Language]
+        end
+
         Layout --> Footer[Footer.tsx<br/>Status Bar]
 
         Footer --> ConnStatus[ConnectionStatus.tsx<br/>Server Online/Offline]
@@ -1004,8 +1046,8 @@ graph TB
     end
 
     subgraph "GraphQL Operations"
-        Queries[Queries:<br/>- serverInfo<br/>- availableModels<br/>- sessionStatus]
-        Mutations[Mutations:<br/>- updateServerConfig<br/>- createSession<br/>- stopSession<br/>- uploadAudioFile (base64)]
+        Queries[Queries:<br/>- serverInfo<br/>- availableModels<br/>- sessionStatus<br/>- recordings<br/>- recording(id)<br/>- recordingTranscript]
+        Mutations[Mutations:<br/>- updateServerConfig<br/>- createSession<br/>- stopSession<br/>- uploadAudioFile (base64)<br/>- deleteRecording]
         Subscriptions[Subscriptions:<br/>- streamTranscription<br/>- streamTranslation(lang)<br/>- sessionStatus]
     end
 
@@ -1025,9 +1067,14 @@ graph TB
     ServerStats -.->|Subscribe| Subscriptions
     TargetPanels -.->|Listen| AudioOut
 
+    RecordingsList -.->|Query| Queries
+    RecordingDetail -.->|Query| Queries
+    PlaybackControls -.->|Stream Audio| AudioOut
+
     style ConfigTab fill:#ff9800
     style SessionTab fill:#2196f3
     style MonitorTab fill:#4caf50
+    style RecordingsTab fill:#9c27b0
 ```
 
 ### Session Configuration Flow
@@ -1872,6 +1919,9 @@ stateDiagram-v2
 10. **On-Demand Model Downloads**: Transformers.js auto-download, cached in server's `models/` directory.
 11. **Base64 File Upload**: Simple GraphQL mutation for file uploads instead of multipart.
 12. **ffmpeg via npm**: Use `@ffmpeg-installer/ffmpeg` + `fluent-ffmpeg` for audio format conversion.
+13. **Recording Storage Abstraction**: `IRecordingStorage` interface enables pluggable backends (filesystem, cloud, database).
+14. **Automatic Session Recording**: All sessions recorded by default with incremental writes during processing.
+15. **Multiple Transcript Formats**: Plain text, timestamped, JSON, and SRT formats generated during finalization.
 
 ### Benefits of Client-Server Architecture
 
@@ -1915,6 +1965,256 @@ stateDiagram-v2
 3. **Cloud Deployment**: Server on AWS/GCP, clients anywhere with internet
 4. **Batch Processing**: Upload files via browser, server processes, download results
 5. **Multi-Session**: One user runs live translation while another processes files
+
+### Recording Storage Architecture
+
+Recording storage enables replay of translation sessions and supports pluggable storage backends.
+
+#### Storage Interface
+
+```typescript
+interface IRecordingStorage {
+  // Session lifecycle
+  createSession(name: string, config: SessionConfig): Promise<RecordingSession>;
+  finalizeSession(sessionId: string): Promise<RecordingMetadata>;
+
+  // Input recording
+  appendInputAudio(sessionId: string, audio: Buffer, utteranceId?: string): Promise<void>;
+  appendInputTranscript(sessionId: string, utterance: TranscriptEntry): Promise<void>;
+
+  // Output recording (per language)
+  appendOutputAudio(sessionId: string, language: string, audio: Buffer, utteranceId?: string): Promise<void>;
+  appendOutputTranscript(sessionId: string, language: string, utterance: TranscriptEntry): Promise<void>;
+
+  // Speaker embedding
+  saveSpeakerEmbedding(sessionId: string, embedding: Buffer): Promise<void>;
+  getSpeakerEmbedding(sessionId: string): Promise<Buffer | null>;
+
+  // Retrieval
+  getSession(sessionId: string): Promise<RecordingSession | null>;
+  listSessions(filter?: SessionFilter): Promise<RecordingMetadata[]>;
+
+  // Playback helpers
+  getInputAudio(sessionId: string): Promise<ReadableStream>;
+  getOutputAudio(sessionId: string, language: string): Promise<ReadableStream>;
+  getUtteranceAudio(sessionId: string, utteranceId: string, language?: string): Promise<Buffer>;
+}
+
+interface TranscriptEntry {
+  utteranceId: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+  confidence?: number;
+  isFinal: boolean;
+}
+```
+
+#### Folder Structure (Local Filesystem)
+
+```
+{basePath}/
+└── 2025-12/                                      # Year-Month grouping
+    └── 2025-12-15-14-30-45-meeting-with-john/    # Session folder
+        ├── session.json                          # Session metadata
+        ├── embedding.bin                         # Speaker embedding
+        ├── input/
+        │   ├── audio.wav                         # Concatenated input
+        │   ├── transcript.txt                    # Plain text
+        │   ├── transcript.timestamps.txt         # With timestamps
+        │   ├── transcript.json                   # Structured JSON
+        │   └── chunks/                           # Per-utterance
+        │       ├── utt-001.wav
+        │       └── utt-002.wav
+        ├── es/
+        │   ├── audio.wav
+        │   ├── transcript.txt
+        │   ├── transcript.timestamps.txt
+        │   ├── transcript.json
+        │   ├── transcript.srt                    # SRT subtitles
+        │   └── chunks/
+        ├── zh/
+        │   └── (same structure)
+        └── ko/
+            └── (same structure)
+```
+
+#### Recording Flow Integration
+
+```mermaid
+sequenceDiagram
+    participant Pipeline as Translation Pipeline
+    participant Storage as IRecordingStorage
+    participant FS as LocalFileStorage
+
+    Note over Pipeline,FS: Session Start
+    Pipeline->>Storage: createSession("meeting", config)
+    Storage->>FS: Create folder structure
+    FS-->>Storage: Session created
+    Storage-->>Pipeline: RecordingSession {id, path}
+
+    Note over Pipeline,FS: During Processing
+    loop Each utterance
+        Pipeline->>Storage: appendInputAudio(sessionId, audio, uttId)
+        Storage->>FS: Write chunks/utt-XXX.wav
+
+        Pipeline->>Storage: appendInputTranscript(sessionId, entry)
+        Storage->>FS: Append to in-memory buffer
+
+        par Per-language outputs
+            Pipeline->>Storage: appendOutputAudio(sessionId, "es", audio, uttId)
+            Storage->>FS: Write es/chunks/utt-XXX.wav
+            Pipeline->>Storage: appendOutputTranscript(sessionId, "es", entry)
+        and
+            Pipeline->>Storage: appendOutputAudio(sessionId, "zh", audio, uttId)
+            Storage->>FS: Write zh/chunks/utt-XXX.wav
+        and
+            Pipeline->>Storage: appendOutputAudio(sessionId, "ko", audio, uttId)
+            Storage->>FS: Write ko/chunks/utt-XXX.wav
+        end
+    end
+
+    Note over Pipeline,FS: Speaker Embedding
+    Pipeline->>Storage: saveSpeakerEmbedding(sessionId, embedding)
+    Storage->>FS: Write embedding.bin
+
+    Note over Pipeline,FS: Session Finalization
+    Pipeline->>Storage: finalizeSession(sessionId)
+    Storage->>FS: Concatenate input/audio.wav
+    Storage->>FS: Concatenate es/audio.wav
+    Storage->>FS: Concatenate zh/audio.wav
+    Storage->>FS: Concatenate ko/audio.wav
+    Storage->>FS: Generate transcript.txt (all)
+    Storage->>FS: Generate transcript.timestamps.txt (all)
+    Storage->>FS: Generate transcript.json (all)
+    Storage->>FS: Generate transcript.srt (outputs only)
+    Storage->>FS: Write session.json
+    Storage-->>Pipeline: RecordingMetadata
+```
+
+#### Transcript Format Examples
+
+**Plain Text (transcript.txt)**:
+```
+Hello, how are you today?
+I'm doing well, thank you for asking.
+```
+
+**Timestamped (transcript.timestamps.txt)**:
+```
+[00:00.000 - 00:02.500] Hello, how are you today?
+[00:03.200 - 00:06.100] I'm doing well, thank you for asking.
+```
+
+**Structured JSON (transcript.json)**:
+```json
+{
+  "utterances": [
+    {
+      "id": "utt-001",
+      "startTime": 0.0,
+      "endTime": 2.5,
+      "text": "Hello, how are you today?",
+      "confidence": 0.95
+    }
+  ]
+}
+```
+
+**SRT Subtitles (transcript.srt)** - For translated outputs:
+```
+1
+00:00:00,000 --> 00:00:02,500
+Hola, ¿cómo estás hoy?
+
+2
+00:00:03,200 --> 00:00:06,100
+Estoy bien, gracias por preguntar.
+```
+
+#### Session Metadata (session.json)
+
+```json
+{
+  "id": "uuid-here",
+  "name": "meeting-with-john",
+  "createdAt": "2025-12-15T14:30:45Z",
+  "completedAt": "2025-12-15T14:45:30Z",
+  "duration": 885.5,
+  "sourceLanguage": "en",
+  "targetLanguages": ["es", "zh", "ko"],
+  "inputSource": "CLIENT_STREAM",
+  "status": "completed",
+  "utteranceCount": 42,
+  "speakerEmbeddingExtracted": true,
+  "files": {
+    "input": {
+      "audio": "input/audio.wav",
+      "chunks": 42
+    },
+    "outputs": {
+      "es": { "audio": "es/audio.wav", "chunks": 42 },
+      "zh": { "audio": "zh/audio.wav", "chunks": 42 },
+      "ko": { "audio": "ko/audio.wav", "chunks": 42 }
+    }
+  }
+}
+```
+
+#### GraphQL Extensions for Recording
+
+```graphql
+# Additional types for recording
+type Recording {
+  id: ID!
+  name: String!
+  createdAt: String!
+  completedAt: String
+  duration: Float!
+  sourceLanguage: Language!
+  targetLanguages: [Language!]!
+  status: RecordingStatus!
+  utteranceCount: Int!
+}
+
+enum RecordingStatus {
+  RECORDING
+  FINALIZING
+  COMPLETED
+  FAILED
+}
+
+type RecordingTranscript {
+  utterances: [TranscriptUtterance!]!
+}
+
+type TranscriptUtterance {
+  id: ID!
+  startTime: Float!
+  endTime: Float!
+  text: String!
+  confidence: Float
+}
+
+# Additional queries
+extend type Query {
+  recordings(filter: RecordingFilter): [Recording!]!
+  recording(id: ID!): Recording
+  recordingTranscript(id: ID!, language: Language): RecordingTranscript!
+}
+
+input RecordingFilter {
+  startDate: String
+  endDate: String
+  name: String
+  status: RecordingStatus
+}
+
+# Additional mutations
+extend type Mutation {
+  deleteRecording(id: ID!): Boolean!
+}
+```
 
 ## Implementation Roadmap
 
@@ -2130,25 +2430,90 @@ stateDiagram-v2
 
 **Deliverables**: Working React web app with live translation UI
 
-### Phase 8: Testing & Optimization
+### Phase 8: Recording Storage & Playback
+
+**Storage Abstraction Layer**
+
+- Implement `IRecordingStorage` interface for pluggable storage backends
+- Create `LocalFileStorage` implementation (filesystem-based)
+- Configure base path via environment variable or config file
+
+**Recording During Sessions**
+
+- Integrate storage hooks into TranslationPipeline
+- Write input audio chunks incrementally (both raw stream and per-utterance)
+- Write output audio per language (both concatenated and per-utterance)
+- Save transcripts incrementally during session
+- Extract and store speaker embedding after extraction
+
+**Session Finalization**
+
+- Concatenate per-utterance audio into full audio files
+- Generate all transcript formats:
+  - Plain text (`transcript.txt`)
+  - Timestamped text (`transcript.timestamps.txt`)
+  - Structured JSON (`transcript.json`)
+  - SRT subtitles (`transcript.srt`) for translated outputs
+- Write `session.json` metadata file
+- Update session status to 'completed'
+
+**Folder Structure Implementation**
+
+```
+{basePath}/
+└── {yyyy-mm}/
+    └── {yyyy-mm-dd-hh-mm-ss}-{name}/
+        ├── session.json
+        ├── embedding.bin
+        ├── input/
+        │   ├── audio.wav
+        │   ├── transcript.txt
+        │   ├── transcript.timestamps.txt
+        │   ├── transcript.json
+        │   └── chunks/
+        ├── es/
+        │   ├── audio.wav
+        │   ├── transcript.txt
+        │   ├── transcript.timestamps.txt
+        │   ├── transcript.json
+        │   ├── transcript.srt
+        │   └── chunks/
+        ├── zh/
+        │   └── (same structure)
+        └── ko/
+            └── (same structure)
+```
+
+**Playback Support**
+
+- Add GraphQL queries for listing and retrieving recordings
+- Stream audio files for playback in client
+- Load and display transcripts with timestamps
+
+**Deliverables**: Complete recording system with local filesystem storage
+
+### Phase 9: Testing & Optimization
 
 **Comprehensive Testing**
 
 - Boundary tests for all server modules
 - API resolver integration tests
 - Client component tests
+- Recording storage tests (create, finalize, retrieve)
 
 **Performance Optimization**
 
 - Profile and optimize bottlenecks
 - Reduce memory footprint where possible
 - Tune chunk sizes for optimal latency
+- Optimize audio concatenation for large files
 
 **Error Handling**
 
 - Graceful degradation on translation failures (fire-and-forget)
 - Retry logic for model loading
 - User-friendly error messages
+- Handle storage failures without blocking pipeline
 
 **Deliverables**: Production-ready code with test coverage
 
@@ -2219,6 +2584,14 @@ stateDiagram-v2
 25. **`projects/web-client/src/apollo/client.ts`** - Apollo Client setup
 26. **`projects/web-client/src/components/TranslationView/TranslationView.tsx`** - Main UI
 
+### Recording Storage - Phase 8
+
+27. **`projects/server/src/interfaces/IRecordingStorage.ts`** - Storage abstraction interface
+28. **`projects/server/src/services/storage/LocalFileStorage.ts`** - Filesystem implementation
+29. **`projects/server/src/services/storage/TranscriptFormatter.ts`** - Generate txt/json/srt formats
+30. **`projects/server/src/services/storage/AudioConcatenator.ts`** - Merge audio chunks
+31. **`projects/server/src/services/storage/SessionFinalizer.ts`** - Finalization logic
+
 ## Immediate Next Steps
 
 To begin implementation immediately:
@@ -2253,6 +2626,11 @@ This plan provides a clear, actionable path to building Voice Bridge with all am
 - ✅ Cross-platform production, Apple Silicon primary testing
 - ✅ Memory budget: ~10GB server, ~6GB headroom on 16GB machine
 - ✅ Boundary tests for each module
+- ✅ Recording storage with abstraction layer (IRecordingStorage)
+- ✅ Local filesystem storage with year-month folder grouping
+- ✅ Both per-utterance and concatenated audio files
+- ✅ Multiple transcript formats (plain text, timestamped, JSON, SRT)
+- ✅ Speaker embedding saved for future re-synthesis
 
 **Key Success Factors:**
 
@@ -2262,5 +2640,6 @@ This plan provides a clear, actionable path to building Voice Bridge with all am
 4. GraphQL subscriptions for text/control; binary WebSockets for audio
 5. Clean Server/Client separation
 6. Prosody extraction with accumulation strategy and fallback
+7. Recording storage abstraction for pluggable backends
 
 The project is ambitious but feasible, with XTTS-v2 intonation matching providing clear differentiation. The phased approach ensures steady progress with testable milestones.
