@@ -4,14 +4,14 @@
 
 **Overall Feasibility: YES - Highly Attainable**
 
-Voice Bridge is a real-time multi-language translation system with **voice intonation matching** as the primary differentiator. The requirements are feasible and well-architected for a 2025 JS/Electron/WASM ML stack.
+Voice Bridge is a real-time multi-language translation system with **voice intonation matching** as the primary differentiator. The requirements are feasible and well-architected for a 2025 Node.js/React/WASM ML stack.
 
 **Architecture: Client-Server Separation**
 
 The system follows a **client-server model** where:
 
-- **Server** (the workhorse): Handles all heavy ML processing, model management, and translation pipeline execution. Can run locally or on remote machines.
-- **Client** (configuration UI): Lightweight Electron app focused on configuration, session management, and monitoring. Multiple clients can connect to a single server.
+- **Server** (the workhorse): A pure Node.js process handling all heavy ML processing, model management, and translation pipeline execution. Uses `worker_threads` for parallelism. Can run locally or on remote machines.
+- **Client** (configuration UI): Lightweight React web application running in a browser, focused on configuration, session management, and monitoring. Multiple clients can connect to a single server.
 
 ### Project Scope (Clarified Requirements)
 
@@ -24,16 +24,20 @@ The system follows a **client-server model** where:
 5. ✅ On-demand model downloads (not bundled with application)
 6. ✅ Multi-format audio input (WAV, MP3 via ffmpeg)
 7. ✅ Decoupled architecture with model swapping capability
+8. ✅ Fire-and-forget translation (languages don't block each other)
 
-**Technology Stack (User-Confirmed):**
+**Technology Stack (Confirmed):**
 
-- **UI Framework**: React + TypeScript + Material UI (MUI)
+- **UI Framework**: React + TypeScript + Material UI (MUI) — **Web app in browser** (not Electron)
+- **Server Runtime**: Pure Node.js with `worker_threads` for parallelism
 - **Build Tool**: Vite
 - **VAD**: Silero VAD
-- **ASR**: Parakeet TDT (via Transformers.js)
-- **Translation**: NLLB-200 (via Transformers.js)
-- **TTS**: XTTS-v2 with prosody embeddings for intonation matching
+- **ASR**: Distil-Whisper Large V3 (via Transformers.js) — _Parakeet TDT not available in Transformers.js_
+- **Translation**: NLLB-200-distilled-600M (via Transformers.js)
+- **TTS**: XTTS-v2 with prosody embeddings for intonation matching (Python microservice)
 - **API**: GraphQL (Apollo Server + Apollo Client)
+- **Audio Streaming**: WebSocket binary (not WebRTC)
+- **Audio Processing**: `@ffmpeg-installer/ffmpeg` + `fluent-ffmpeg`
 - **Testing**: Vitest with boundary tests for each module
 
 **Platform Targets:**
@@ -64,7 +68,7 @@ The repository is in **early scaffolding stage**:
 
 ```mermaid
 graph TB
-    subgraph "Client Layer (Electron + React)"
+    subgraph "Client Layer (React Web App in Browser)"
         UI[Material UI Interface]
         AC[Apollo Client]
         AudioIn[Web Audio API - Input]
@@ -78,18 +82,18 @@ graph TB
         PS[PubSub Event Bus]
     end
 
-    subgraph "Core Layer (Business Logic)"
+    subgraph "Core Layer (Node.js Server with worker_threads)"
         TP[Translation Pipeline]
         VAD[Silero VAD]
-        ASR[Parakeet ASR]
+        ASR[Distil-Whisper ASR]
 
-        subgraph "Translation Workers (3x)"
+        subgraph "Translation Workers (3x worker_threads)"
             TW1[NLLB - Spanish]
             TW2[NLLB - Chinese]
             TW3[NLLB - Korean]
         end
 
-        subgraph "TTS Workers (3x)"
+        subgraph "TTS Workers (3x worker_threads)"
             TTW1[XTTS Client - ES]
             TTW2[XTTS Client - ZH]
             TTW3[XTTS Client - KO]
@@ -148,10 +152,10 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant U as User (Speaking)
-    participant UI as Client UI
+    participant UI as Client UI (Browser)
     participant API as GraphQL API
     participant VAD as Voice Activity Detection
-    participant ASR as Speech Recognition
+    participant ASR as Distil-Whisper ASR
     participant T as Translation Workers
     participant TTS as TTS Workers
     participant XTTS as XTTS-v2 Server
@@ -159,11 +163,11 @@ sequenceDiagram
 
     U->>UI: Start speaking
     UI->>API: Subscribe to streamTranscription
-    UI->>API: Subscribe to streamTranslation
-    UI->>API: Subscribe to streamAudio
+    UI->>API: Subscribe to streamTranslation (per language)
+    UI->>API: Subscribe to streamAudio (per language)
 
     loop Audio Stream
-        UI->>VAD: Send audio chunks
+        UI->>VAD: Send audio chunks (WebSocket binary)
         VAD->>VAD: Detect voice activity
 
         alt Voice detected
@@ -174,7 +178,7 @@ sequenceDiagram
 
             ASR->>T: Send English text
 
-            par Parallel Translation
+            par Parallel Translation (Fire-and-Forget)
                 T->>T: Translate to Spanish
                 T->>API: Emit Spanish text
                 API->>UI: Stream Spanish text
@@ -188,26 +192,26 @@ sequenceDiagram
                 API->>UI: Stream Korean text
             end
 
-            par Parallel TTS Synthesis
+            par Parallel TTS Synthesis (Fire-and-Forget)
                 T->>TTS: Spanish text + speaker embedding
                 TTS->>XTTS: Synthesize (ES, embedding)
                 XTTS->>TTS: Spanish audio with matched intonation
                 TTS->>API: Emit audio event
-                API->>UI: Stream Spanish audio
+                API->>UI: Stream Spanish audio (dedicated channel)
                 UI->>Audio: Play Spanish audio
             and
                 T->>TTS: Chinese text + speaker embedding
                 TTS->>XTTS: Synthesize (ZH, embedding)
                 XTTS->>TTS: Chinese audio with matched intonation
                 TTS->>API: Emit audio event
-                API->>UI: Stream Chinese audio
+                API->>UI: Stream Chinese audio (dedicated channel)
                 UI->>Audio: Play Chinese audio
             and
                 T->>TTS: Korean text + speaker embedding
                 TTS->>XTTS: Synthesize (KO, embedding)
                 XTTS->>TTS: Korean audio with matched intonation
                 TTS->>API: Emit audio event
-                API->>UI: Stream Korean audio
+                API->>UI: Stream Korean audio (dedicated channel)
                 UI->>Audio: Play Korean audio
             end
         end
@@ -226,7 +230,7 @@ flowchart TD
 
     Buffer --> VAD{Silero VAD<br/>Voice Detected?}
     VAD -->|No - Silence| Buffer
-    VAD -->|Yes - Voice Activity| ASR[Parakeet TDT ASR<br/>Speech-to-Text]
+    VAD -->|Yes - Voice Activity| ASR[Distil-Whisper ASR<br/>Speech-to-Text]
 
     ASR --> EnglishText[English Transcription]
     EnglishText --> Display1[Display English Text in UI]
@@ -245,7 +249,7 @@ flowchart TD
     ChineseText --> Display3[Display Chinese Text]
     KoreanText --> Display4[Display Korean Text]
 
-    Buffer --> ProsodyExtract[Extract Speaker Embedding<br/>First 3-6 seconds]
+    Buffer --> ProsodyExtract[Extract Speaker Embedding<br/>Accumulate 3-6 seconds voiced audio]
     ProsodyExtract --> Embedding[(Speaker Embedding<br/>Voice Signature)]
 
     SpanishText --> TTS_ES[XTTS TTS Worker<br/>Spanish Synthesis]
@@ -264,11 +268,11 @@ flowchart TD
     XTTS_Server_ZH --> AudioZH[Chinese Audio<br/>with User's Voice]
     XTTS_Server_KO --> AudioKO[Korean Audio<br/>with User's Voice]
 
-    AudioES --> PlayES[Play Spanish Audio]
-    AudioZH --> PlayZH[Play Chinese Audio]
-    AudioKO --> PlayKO[Play Korean Audio]
+    AudioES --> PlayES[Stream to Spanish Channel]
+    AudioZH --> PlayZH[Stream to Chinese Channel]
+    AudioKO --> PlayKO[Stream to Korean Channel]
 
-    PlayES --> End([User Hears Translations])
+    PlayES --> End([User Hears Translations<br/>Each language on dedicated channel])
     PlayZH --> End
     PlayKO --> End
 
@@ -297,16 +301,17 @@ stateDiagram-v2
     DownloadingModels --> Error: Download failed
 
     Ready --> ExtractingProsody: Audio detected
-    ExtractingProsody --> Listening: Embedding extracted
-    ExtractingProsody --> Error: Extraction failed
+    ExtractingProsody --> Listening: Embedding extracted (3s+ voiced audio)
+    ExtractingProsody --> ListeningWithDefault: Timeout, using default embedding
 
     Listening --> Processing: Voice activity detected
     Listening --> Listening: Silence detected
+    ListeningWithDefault --> Processing: Voice activity detected
 
     Processing --> Transcribing: Audio chunk ready
     Transcribing --> Translating: Text recognized
-    Translating --> Synthesizing: Translations complete
-    Synthesizing --> Listening: Audio output sent
+    Translating --> Synthesizing: Fire-and-forget to TTS
+    Synthesizing --> Listening: Continue listening
 
     Listening --> Paused: User pauses
     Processing --> Paused: User pauses
@@ -337,7 +342,7 @@ graph LR
         F -->|Yes| G[English Text]
     end
 
-    subgraph "Parallel Translation Pipeline"
+    subgraph "Parallel Translation Pipeline (Fire-and-Forget)"
         G --> H1[Translation<br/>Worker 1]
         G --> H2[Translation<br/>Worker 2]
         G --> H3[Translation<br/>Worker 3]
@@ -347,7 +352,7 @@ graph LR
         H3 --> I3[Korean Text]
     end
 
-    subgraph "Parallel TTS Pipeline"
+    subgraph "Parallel TTS Pipeline (Fire-and-Forget)"
         I1 --> J1[TTS Worker 1]
         I2 --> J2[TTS Worker 2]
         I3 --> J3[TTS Worker 3]
@@ -361,56 +366,58 @@ graph LR
         J3 --> K3[Korean Audio]
     end
 
-    subgraph "Output"
-        K1 --> L[Audio Mixer]
-        K2 --> L
-        K3 --> L
-        L --> M[Speakers/Headphones]
+    subgraph "Output (Separate Channels)"
+        K1 --> L1[Spanish WebSocket Channel]
+        K2 --> L2[Chinese WebSocket Channel]
+        K3 --> L3[Korean WebSocket Channel]
     end
 
-    A -.->|First 3-6s| PE[Prosody<br/>Extraction]
+    A -.->|First 3-6s voiced| PE[Prosody<br/>Extraction]
     PE --> SE
 
     style SE fill:#ff9800
     style PE fill:#ff9800
 ```
 
-### Web Worker Architecture
+### Worker Thread Architecture (Node.js)
 
 ```mermaid
 graph TB
-    subgraph "Main Thread"
-        UI[UI Components]
+    subgraph "Main Thread (Node.js Server)"
         Pipeline[Translation Pipeline Orchestrator]
-        AudioContext[Web Audio API Context]
+        GQL[GraphQL Server]
+        WSServer[WebSocket Server]
     end
 
-    subgraph "Audio Worklet Thread"
-        VAD_Worklet[VAD Audio Worklet<br/>Real-time Processing]
-    end
+    subgraph "Worker Thread Pool (worker_threads)"
+        subgraph "ASR Worker"
+            ASR_Worker[Distil-Whisper Worker<br/>~1.5GB RAM]
+        end
 
-    subgraph "Translation Worker Pool"
-        TW1[Worker 1<br/>NLLB Spanish<br/>~1.2GB RAM]
-        TW2[Worker 2<br/>NLLB Chinese<br/>~1.2GB RAM]
-        TW3[Worker 3<br/>NLLB Korean<br/>~1.2GB RAM]
-    end
+        subgraph "Translation Workers"
+            TW1[Worker 1<br/>NLLB Spanish<br/>~600MB RAM]
+            TW2[Worker 2<br/>NLLB Chinese<br/>~600MB RAM]
+            TW3[Worker 3<br/>NLLB Korean<br/>~600MB RAM]
+        end
 
-    subgraph "TTS Worker Pool"
-        TTW1[Worker 1<br/>XTTS Client ES<br/>HTTP Calls]
-        TTW2[Worker 2<br/>XTTS Client ZH<br/>HTTP Calls]
-        TTW3[Worker 3<br/>XTTS Client KO<br/>HTTP Calls]
-    end
-
-    subgraph "ASR Worker"
-        ASR_Worker[Parakeet TDT Worker<br/>~1.2GB RAM]
+        subgraph "TTS Workers"
+            TTW1[Worker 1<br/>XTTS Client ES<br/>HTTP Calls]
+            TTW2[Worker 2<br/>XTTS Client ZH<br/>HTTP Calls]
+            TTW3[Worker 3<br/>XTTS Client KO<br/>HTTP Calls]
+        end
     end
 
     subgraph "External Process"
         Python[XTTS-v2 Python Server<br/>~2GB RAM<br/>Port 8000]
     end
 
-    AudioContext -->|Audio Chunks| VAD_Worklet
-    VAD_Worklet -->|Voice Activity| Pipeline
+    subgraph "Client (Browser)"
+        UI[React Web App]
+        AudioCapture[Web Audio API]
+    end
+
+    AudioCapture -->|WebSocket Binary| WSServer
+    WSServer -->|Audio Chunks| Pipeline
     Pipeline -->|Audio| ASR_Worker
     ASR_Worker -->|English Text| Pipeline
 
@@ -438,11 +445,11 @@ graph TB
     TTW2 -->|Audio| Pipeline
     TTW3 -->|Audio| Pipeline
 
-    Pipeline --> UI
-    Pipeline --> AudioContext
+    Pipeline --> GQL
+    GQL -->|GraphQL Subscriptions| UI
 
     style Python fill:#e91e63
-    style VAD_Worklet fill:#2196f3
+    style ASR_Worker fill:#2196f3
 ```
 
 ### Memory Allocation Diagram
@@ -450,22 +457,36 @@ graph TB
 ```mermaid
 pie title Memory Budget (16GB Apple Silicon)
     "OS + System" : 3000
-    "Electron + Browser" : 2000
-    "Parakeet ASR" : 1200
-    "NLLB Spanish" : 1200
-    "NLLB Chinese" : 1200
-    "NLLB Korean" : 1200
+    "Node.js Server Process" : 500
+    "Distil-Whisper ASR" : 1500
+    "NLLB Spanish (600M)" : 600
+    "NLLB Chinese (600M)" : 600
+    "NLLB Korean (600M)" : 600
     "XTTS Python Server" : 2000
-    "Working Memory + Buffers" : 3000
+    "Working Memory + Buffers" : 1000
     "Silero VAD" : 10
-    "Available Headroom" : 2190
+    "Available Headroom" : 6190
 ```
+
+**Memory Budget Summary:**
+
+| Component                      | Memory  | Notes                          |
+| ------------------------------ | ------- | ------------------------------ |
+| OS + System                    | 3.0 GB  | macOS baseline                 |
+| Node.js Server Process         | 0.5 GB  | Base process + V8 heap         |
+| Distil-Whisper Large V3 (ASR)  | 1.5 GB  | Via Transformers.js in Node.js |
+| NLLB-200-distilled-600M × 3    | 1.8 GB  | 600MB each                     |
+| XTTS-v2 Python Server          | 2.0 GB  | Separate process               |
+| Silero VAD                     | 0.01 GB | Negligible                     |
+| Audio buffers + working memory | 1.0 GB  | Streaming buffers              |
+| React Web UI (browser, client) | —       | Runs in user's browser         |
+| **Total Server**               | ~10 GB  | Leaves ~6GB headroom           |
 
 ### GraphQL Subscription Flow
 
 ```mermaid
 sequenceDiagram
-    participant Client as Client UI
+    participant Client as Client UI (Browser)
     participant Server as GraphQL Server
     participant PubSub as PubSub Event Bus
     participant Pipeline as Translation Pipeline
@@ -502,15 +523,15 @@ sequenceDiagram
 
         Pipeline->>PubSub: Publish audio event (es)
         PubSub->>Server: Event received
-        Server->>Client: { data: { audio: ArrayBuffer, lang: "es" } }
+        Server->>Client: { data: { audio: base64, lang: "es" } }
 
         Pipeline->>PubSub: Publish audio event (zh)
         PubSub->>Server: Event received
-        Server->>Client: { data: { audio: ArrayBuffer, lang: "zh" } }
+        Server->>Client: { data: { audio: base64, lang: "zh" } }
 
         Pipeline->>PubSub: Publish audio event (ko)
         PubSub->>Server: Event received
-        Server->>Client: { data: { audio: ArrayBuffer, lang: "ko" } }
+        Server->>Client: { data: { audio: base64, lang: "ko" } }
     end
 
     Client->>Server: mutation { stopPipeline }
@@ -534,20 +555,23 @@ sequenceDiagram
     participant TTS as TTS Workers (3x)
     participant Output as Audio Output
 
-    Note over User,Output: PHASE 1: Initial Speaker Embedding Extraction
+    Note over User,Output: PHASE 1: Speaker Embedding Extraction (Accumulation Strategy)
 
-    User->>Mic: Start speaking (first 3-6 seconds)
-    Mic->>Buffer: Capture reference audio
-    Buffer->>PE: Send reference audio chunk
-    PE->>XTTS: POST /extract-embedding<br/>{audio: base64}
+    User->>Mic: Start speaking
+    Mic->>Buffer: Capture audio chunks
+    Buffer->>PE: Accumulate voiced audio
 
-    Note over XTTS: Analyze speaker characteristics:<br/>- Pitch patterns<br/>- Speech rhythm<br/>- Voice timbre<br/>- Emotional tone
-
-    XTTS->>XTTS: Extract prosody features
-    XTTS->>PE: Return speaker_embedding<br/>(768-dim vector)
-    PE->>Store: Cache embedding
-
-    Note over Store: Embedding contains:<br/>- Voice signature<br/>- Intonation patterns<br/>- Speaking style
+    alt Sufficient audio (3-6 seconds voiced)
+        PE->>XTTS: POST /extract-embedding<br/>{audio: base64}
+        Note over XTTS: Analyze speaker characteristics:<br/>- Pitch patterns<br/>- Speech rhythm<br/>- Voice timbre<br/>- Emotional tone
+        XTTS->>XTTS: Extract prosody features
+        XTTS->>PE: Return speaker_embedding<br/>(768-dim vector)
+        PE->>Store: Cache embedding
+        Note over Store: Embedding locked for session
+    else Timeout (30s without 3s voiced audio)
+        PE->>Store: Use default neutral embedding
+        PE->>Trans: Emit warning: "Using default voice"
+    end
 
     Note over User,Output: PHASE 2: Real-time Translation with Intonation
 
@@ -555,43 +579,70 @@ sequenceDiagram
     Mic->>Trans: Audio stream
     Trans->>Trans: VAD → ASR → Translation
 
-    par Spanish Synthesis
+    par Spanish Synthesis (Fire-and-Forget)
         Trans->>TTS: Spanish text
         Store->>TTS: speaker_embedding
         TTS->>XTTS: POST /synthesize<br/>{text: "Hola", lang: "es",<br/>speaker_embedding: vector}
-
         Note over XTTS: Apply user's voice characteristics<br/>to Spanish output
-
         XTTS->>TTS: Spanish audio with<br/>user's intonation
-        TTS->>Output: Play Spanish
-    and Chinese Synthesis
+        TTS->>Output: Stream to Spanish channel
+    and Chinese Synthesis (Fire-and-Forget)
         Trans->>TTS: Chinese text
         Store->>TTS: speaker_embedding
         TTS->>XTTS: POST /synthesize<br/>{text: "你好", lang: "zh",<br/>speaker_embedding: vector}
-
         Note over XTTS: Apply user's voice characteristics<br/>to Chinese output
-
         XTTS->>TTS: Chinese audio with<br/>user's intonation
-        TTS->>Output: Play Chinese
-    and Korean Synthesis
+        TTS->>Output: Stream to Chinese channel
+    and Korean Synthesis (Fire-and-Forget)
         Trans->>TTS: Korean text
         Store->>TTS: speaker_embedding
         TTS->>XTTS: POST /synthesize<br/>{text: "안녕하세요", lang: "ko",<br/>speaker_embedding: vector}
-
         Note over XTTS: Apply user's voice characteristics<br/>to Korean output
-
         XTTS->>TTS: Korean audio with<br/>user's intonation
-        TTS->>Output: Play Korean
+        TTS->>Output: Stream to Korean channel
     end
 
     Note over User,Output: Result: All 3 languages sound like the user's voice!
+```
+
+### Prosody Extraction Strategy
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              PROSODY EXTRACTION STRATEGY                │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  Voiced Audio Duration    Action                        │
+│  ────────────────────────────────────────────────────  │
+│  < 1 second              Continue accumulating          │
+│  1-3 seconds             Extract with quality warning   │
+│  3-6 seconds             Optimal extraction             │
+│  > 6 seconds             Use first 6s, stop accumulating│
+│                                                         │
+│  ACCUMULATION MODE:                                     │
+│  - Accumulate only VOICED audio (ignore silence)        │
+│  - Use VAD to filter silence from reference buffer      │
+│  - Lock embedding after extraction succeeds             │
+│                                                         │
+│  TIMEOUT BEHAVIOR:                                      │
+│  - If 30 seconds pass without 3s of voiced audio        │
+│  - Use default neutral embedding                        │
+│  - Emit warning to client UI                            │
+│  - Continue with translation (don't block)              │
+│                                                         │
+│  REFRESH STRATEGY (V1):                                 │
+│  - Lock embedding at session start                      │
+│  - No mid-session refresh                               │
+│  - User can restart session for new embedding           │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### XTTS-v2 Python Service Architecture
 
 ```mermaid
 graph TB
-    subgraph "TypeScript/Electron Application"
+    subgraph "Node.js Server"
         TTSWorker1[TTS Worker 1<br/>Spanish]
         TTSWorker2[TTS Worker 2<br/>Chinese]
         TTSWorker3[TTS Worker 3<br/>Korean]
@@ -641,6 +692,16 @@ graph TB
     style Cache fill:#ff9800
 ```
 
+**XTTS-v2 Language Support:**
+
+| Language        | Support Level | Notes                             |
+| --------------- | ------------- | --------------------------------- |
+| English (en)    | ✅ Excellent  | Primary training language         |
+| Spanish (es)    | ✅ Excellent  | Well-supported                    |
+| Chinese (zh-cn) | ✅ Good       | Mandarin; consider ChatTTS backup |
+| Korean (ko)     | ✅ Good       | Added in XTTS-v2                  |
+| + 13 more       | Varies        | See XTTS-v2 documentation         |
+
 ### Complete End-to-End Data Transformation
 
 ```mermaid
@@ -660,7 +721,7 @@ graph TD
 
     subgraph "Stage 3: Speech Recognition"
         C1[Accumulated Audio<br/>Until pause detected]
-        C2[Parakeet TDT Model<br/>ASR Processing]
+        C2[Distil-Whisper Model<br/>ASR Processing]
         C3[English Text<br/>'Hello, how are you?']
     end
 
@@ -674,7 +735,7 @@ graph TD
     end
 
     subgraph "Stage 5: Prosody Extraction"
-        E1[Reference Audio<br/>First 3-6 seconds]
+        E1[Reference Audio<br/>3-6 seconds voiced]
         E2[XTTS Speaker Encoder]
         E3[Speaker Embedding<br/>768-dim vector<br/>Unique voice signature]
     end
@@ -688,10 +749,10 @@ graph TD
         F6[Korean Audio<br/>WAV, user's voice]
     end
 
-    subgraph "Stage 7: Audio Output"
-        G1[Audio Decoding]
-        G2[Volume Normalization]
-        G3[Speaker Output<br/>3 channels mixed]
+    subgraph "Stage 7: Audio Output (Separate Channels)"
+        G1[Spanish WebSocket/Subscription]
+        G2[Chinese WebSocket/Subscription]
+        G3[Korean WebSocket/Subscription]
     end
 
     A1 --> A2 --> A3
@@ -723,10 +784,8 @@ graph TD
     F3 --> F6
 
     F4 --> G1
-    F5 --> G1
-    F6 --> G1
-    G1 --> G2
-    G2 --> G3
+    F5 --> G2
+    F6 --> G3
 
     style E3 fill:#ff9800
     style E2 fill:#ff9800
@@ -735,68 +794,74 @@ graph TD
     style F3 fill:#e91e63
 ```
 
-### Three-Layer Design (Revised: Client-Server Separation)
+### Two-Layer Design (Server + Web Client)
 
 **projects/server** (Translation Server - The Workhorse)
 
-Combines Core + API into a standalone server process that can run independently:
+A standalone Node.js server process that can run independently:
 
+- Pure Node.js with `worker_threads` for parallelism
 - ASR, Translation, TTS, VAD service implementations
 - TranslationPipeline orchestration
-- Web Worker architecture for parallelism
-- Model management (on-demand downloads)
-- Audio processing utilities
+- Model management (on-demand downloads via Transformers.js)
+- Audio processing utilities (ffmpeg for format conversion)
 - GraphQL API with WebSocket subscriptions
+- WebSocket server for binary audio streaming from clients
 - Session management for multi-client support
 - Can run locally or on remote machine
-- Accepts audio input (live stream or file upload)
+- Accepts audio input (live stream or file)
 - Produces audio output (live stream or file download)
 
-**projects/client-app** (Configuration & Control UI)
+**projects/web-client** (Configuration & Control UI)
 
-Lightweight Electron + React application focused on configuration:
+Lightweight React web application running in the browser:
 
 - **Model Configuration UI**: Select ASR, Translation, TTS models
 - **Session Configuration UI**:
-  - Input settings (live audio via audio jack OR file upload MP3/WAV)
+  - Input settings (live audio from browser mic OR file upload MP3/WAV)
   - Language settings (enable/disable Spanish, Chinese, Korean)
-  - Output settings (live stream OR save to file)
+  - Output settings (live stream per language OR save to file)
 - **Server Connection**: Connect to local or remote server
 - **Session Control**: Start/stop translation sessions
 - **Real-time Monitoring**: Display transcription, translations, and status
 - Apollo Client for GraphQL communication
+- Web Audio API for microphone capture
+- Separate audio players per language (no mixing)
 - No heavy ML processing (all done server-side)
 
-### Deployment Architecture (Revised: Client-Server Model)
+### Deployment Architecture
 
 ```mermaid
 graph TB
-    subgraph "Client Machine"
-        subgraph "Electron Client App"
+    subgraph "Client Machine (Browser)"
+        subgraph "React Web App"
             UI[Configuration UI<br/>React + MUI]
             Apollo_Client[Apollo GraphQL Client]
             FileUpload[File Upload Handler]
-            AudioCapture[Audio Capture<br/>Microphone Input]
-            AudioPlayer[Audio Player<br/>Stream Output]
+            AudioCapture[Web Audio API<br/>Microphone Input]
+            AudioPlayerES[Audio Player<br/>Spanish Channel]
+            AudioPlayerZH[Audio Player<br/>Chinese Channel]
+            AudioPlayerKO[Audio Player<br/>Korean Channel]
         end
 
-        ClientConfig[Client Config<br/>Server URL<br/>Session Preferences]
+        ClientConfig[Browser LocalStorage<br/>Server URL<br/>Session Preferences]
     end
 
     subgraph "Server Machine (Local or Remote)"
-        subgraph "Translation Server Process"
+        subgraph "Translation Server Process (Node.js)"
             GQL_Server[GraphQL Server<br/>Apollo + WebSocket]
+            WS_Audio[WebSocket Audio Server<br/>Binary Streaming]
             SessionMgr[Session Manager<br/>Multi-client Support]
 
             subgraph "Translation Pipeline"
                 Pipeline[Pipeline Orchestrator]
-                VAD[VAD Audio Worklet]
+                VAD[VAD Module]
 
-                subgraph "Web Workers"
-                    ASR_Worker[ASR Worker<br/>Parakeet TDT<br/>1.2GB]
-                    TW1[Translation Worker 1<br/>NLLB Spanish<br/>1.2GB]
-                    TW2[Translation Worker 2<br/>NLLB Chinese<br/>1.2GB]
-                    TW3[Translation Worker 3<br/>NLLB Korean<br/>1.2GB]
+                subgraph "Worker Threads"
+                    ASR_Worker[ASR Worker<br/>Distil-Whisper<br/>1.5GB]
+                    TW1[Translation Worker 1<br/>NLLB Spanish<br/>600MB]
+                    TW2[Translation Worker 2<br/>NLLB Chinese<br/>600MB]
+                    TW3[Translation Worker 3<br/>NLLB Korean<br/>600MB]
                     TTW1[TTS Worker 1<br/>XTTS Client]
                     TTW2[TTS Worker 2<br/>XTTS Client]
                     TTW3[TTS Worker 3<br/>XTTS Client]
@@ -813,7 +878,7 @@ graph TB
         end
 
         subgraph "Server Storage"
-            Models[ML Models Cache<br/>~8GB]
+            Models[ML Models Cache<br/>~6GB]
             Sessions[Session Files<br/>Audio Input/Output]
             ServerConfig[Server Config<br/>Model Selections]
         end
@@ -825,13 +890,15 @@ graph TB
 
     UI --> Apollo_Client
     Apollo_Client <-->|GraphQL/WebSocket<br/>Can be over network| GQL_Server
+    AudioCapture <-->|WebSocket Binary| WS_Audio
 
-    FileUpload -.->|Upload MP3/WAV| AudioIO
-    AudioCapture -.->|Stream PCM Audio| AudioIO
-    AudioIO -.->|Stream Output| AudioPlayer
-    AudioIO -.->|Download File| FileUpload
+    FileUpload -.->|Base64 via GraphQL| GQL_Server
+    GQL_Server -.->|Audio Subscription ES| AudioPlayerES
+    GQL_Server -.->|Audio Subscription ZH| AudioPlayerZH
+    GQL_Server -.->|Audio Subscription KO| AudioPlayerKO
 
     GQL_Server --> SessionMgr
+    WS_Audio --> SessionMgr
     SessionMgr --> Pipeline
 
     Pipeline --> VAD
@@ -869,27 +936,25 @@ graph TB
 
 1. **Local Deployment** (Development/Single User):
 
-   - Client and Server both run on same machine (localhost)
+   - Client (browser) and Server both run on same machine (localhost)
    - Low latency, full resource access
 
 2. **Remote Deployment** (Production/Multi-User):
 
    - Server runs on powerful machine/cloud instance (16GB+ RAM)
-   - Multiple thin clients connect remotely
-   - Clients only need network connection, no heavy GPU/RAM
+   - Multiple thin clients (browsers) connect remotely
+   - Clients only need a modern browser, no installation
 
-3. **Hybrid Deployment**:
+3. **LAN Deployment**:
    - Server on local network (e.g., Mac Studio with 64GB RAM)
    - Multiple users connect via LAN
    - Low latency + resource sharing
 
-````
-
-### UI Component Hierarchy (Revised: Configuration-Focused Client)
+### UI Component Hierarchy (React Web App)
 
 ```mermaid
 graph TB
-    subgraph "Client Application UI"
+    subgraph "Web Application UI"
         App[App.tsx<br/>Apollo Provider + Theme + Router]
 
         App --> Layout[MainLayout.tsx<br/>MUI Container]
@@ -915,8 +980,8 @@ graph TB
             SessionForm --> OutputConfig[OutputDestinationConfig.tsx]
             SessionForm --> StartSession[StartSessionButton.tsx]
 
-            InputConfig --> LiveAudioInput[LiveAudioInput.tsx<br/>Mic Selection]
-            InputConfig --> FileInput[FileInput.tsx<br/>Upload MP3/WAV]
+            InputConfig --> LiveAudioInput[LiveAudioInput.tsx<br/>Browser Mic]
+            InputConfig --> FileInput[FileInput.tsx<br/>Upload MP3/WAV as Base64]
 
             LangConfig --> SourceLang[SourceLanguage.tsx<br/>Default: English]
             LangConfig --> TargetLangs[TargetLanguages.tsx<br/>Enable ES/ZH/KO]
@@ -932,11 +997,9 @@ graph TB
             Display --> SourcePanel[SourceTranscription.tsx<br/>English Text Display]
             Display --> TargetPanels[TargetLanguagePanels.tsx<br/>3-Column Layout]
 
-            TargetPanels --> SpanishPanel[SpanishPanel.tsx<br/>Text + Audio Waveform]
-            TargetPanels --> ChinesePanel[ChinesePanel.tsx<br/>Text + Audio Waveform]
-            TargetPanels --> KoreanPanel[KoreanPanel.tsx<br/>Text + Audio Waveform]
-
-            Display --> AudioPlayer[AudioPlayer.tsx<br/>Playback Controls]
+            TargetPanels --> SpanishPanel[SpanishPanel.tsx<br/>Text + Dedicated Audio Player]
+            TargetPanels --> ChinesePanel[ChinesePanel.tsx<br/>Text + Dedicated Audio Player]
+            TargetPanels --> KoreanPanel[KoreanPanel.tsx<br/>Text + Dedicated Audio Player]
         end
 
         Layout --> Footer[Footer.tsx<br/>Status Bar]
@@ -948,8 +1011,8 @@ graph TB
 
     subgraph "GraphQL Operations"
         Queries[Queries:<br/>- serverInfo<br/>- availableModels<br/>- sessionStatus]
-        Mutations[Mutations:<br/>- updateServerConfig<br/>- createSession<br/>- stopSession<br/>- uploadAudioFile]
-        Subscriptions[Subscriptions:<br/>- streamTranscription<br/>- streamTranslation<br/>- streamAudio<br/>- sessionStatus]
+        Mutations[Mutations:<br/>- updateServerConfig<br/>- createSession<br/>- stopSession<br/>- uploadAudioFile (base64)]
+        Subscriptions[Subscriptions:<br/>- streamTranscription<br/>- streamTranslation(lang)<br/>- streamAudio(lang)<br/>- sessionStatus]
     end
 
     ServerConfig -.->|Query| Queries
@@ -957,7 +1020,7 @@ graph TB
     ModelConfig -.->|Mutate| Mutations
 
     SessionForm -.->|Mutate| Mutations
-    FileInput -.->|Upload| Mutations
+    FileInput -.->|Mutate (base64)| Mutations
 
     Display -.->|Subscribe| Subscriptions
     SessionStatus -.->|Subscribe| Subscriptions
@@ -966,14 +1029,14 @@ graph TB
     style ConfigTab fill:#ff9800
     style SessionTab fill:#2196f3
     style MonitorTab fill:#4caf50
-````
+```
 
 ### Session Configuration Flow
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant UI as Client UI
+    participant UI as Client UI (Browser)
     participant Server as Translation Server
 
     Note over User,Server: Step 1: Configure Server & Models
@@ -991,20 +1054,21 @@ sequenceDiagram
     User->>UI: Open Session Tab
     User->>UI: Select Input Source
 
-    alt Live Audio Input
-        User->>UI: Select microphone device
-        UI->>UI: Enable audio capture
+    alt Live Audio Input (Browser Mic)
+        User->>UI: Grant microphone permission
+        UI->>UI: Enable audio capture via Web Audio API
     else File Input
-        User->>UI: Upload MP3/WAV file
-        UI->>Server: Mutation uploadAudioFile(file)
-        Server->>UI: File uploaded, ID returned
+        User->>UI: Select MP3/WAV file
+        UI->>UI: Read file as base64
+        UI->>Server: Mutation uploadAudioFile(base64, filename)
+        Server->>UI: File received, ID returned
     end
 
     User->>UI: Enable target languages (ES, ZH, KO)
 
     User->>UI: Select Output Destination
     alt Live Stream
-        UI->>UI: Prepare audio player
+        UI->>UI: Prepare audio players (one per language)
     else Save to File
         UI->>UI: Prepare download handler
     end
@@ -1017,8 +1081,12 @@ sequenceDiagram
     Server->>UI: Session created, ID returned
 
     UI->>Server: Subscribe to streamTranscription(sessionId)
-    UI->>Server: Subscribe to streamTranslation(sessionId, lang)
-    UI->>Server: Subscribe to streamAudio(sessionId, lang)
+    UI->>Server: Subscribe to streamTranslation(sessionId, "es")
+    UI->>Server: Subscribe to streamTranslation(sessionId, "zh")
+    UI->>Server: Subscribe to streamTranslation(sessionId, "ko")
+    UI->>Server: Subscribe to streamAudio(sessionId, "es")
+    UI->>Server: Subscribe to streamAudio(sessionId, "zh")
+    UI->>Server: Subscribe to streamAudio(sessionId, "ko")
 
     Note over User,Server: Step 4: Monitor Results
 
@@ -1026,8 +1094,8 @@ sequenceDiagram
 
     loop Real-time Translation
         Server->>UI: Stream transcription updates
-        Server->>UI: Stream translation updates
-        Server->>UI: Stream audio data
+        Server->>UI: Stream translation updates (per language)
+        Server->>UI: Stream audio data (per language, dedicated channel)
         UI->>User: Display text & play audio
     end
 
@@ -1049,24 +1117,24 @@ sequenceDiagram
 
 ```mermaid
 graph TB
-    subgraph "Client Machine"
-        ClientMic[Client Microphone]
+    subgraph "Client Machine (Browser)"
+        ClientMic[Browser Microphone]
         FileSelect[File Selector]
 
-        subgraph "Client App"
-            AudioCapture[Web Audio API<br/>Capture]
-            FileReader[File Reader]
+        subgraph "React Web App"
+            AudioCapture[Web Audio API<br/>Capture + AudioWorklet]
+            FileReader[FileReader API]
             GraphQLClient[GraphQL Client<br/>Apollo]
-            WSClient[WebSocket Client<br/>Binary Stream]
+            WSClient[WebSocket Client<br/>Binary Audio Stream]
         end
     end
 
     subgraph "Server Machine"
-        ServerMic[Server Audio Jack]
+        ServerMic[Server Audio Jack<br/>(Optional)]
 
         subgraph "Server Endpoints"
             GraphQLServer[GraphQL Server<br/>Port 4000]
-            WSServer[WebSocket Audio Server<br/>Port 4001]
+            WSAudioServer[WebSocket Audio Server<br/>Port 4001]
             FileStorage[File Storage<br/>uploads/]
         end
 
@@ -1081,27 +1149,27 @@ graph TB
     GraphQLClient -->|Mutation createSession<br/>type: SERVER_AUDIO_DEVICE| GraphQLServer
     GraphQLServer -->|Configure| AudioRouter
 
-    %% Scenario 2: File Upload
+    %% Scenario 2: File Upload (Base64 via GraphQL)
     FileSelect --> FileReader
-    FileReader -->|Multipart Upload| GraphQLClient
-    GraphQLClient -->|Mutation uploadAudioFile| GraphQLServer
+    FileReader -->|Base64 String| GraphQLClient
+    GraphQLClient -->|Mutation uploadAudioFile<br/>content: base64| GraphQLServer
     GraphQLServer --> FileStorage
     FileStorage -->|Read File| AudioRouter
 
-    %% Scenario 3: Client Stream
+    %% Scenario 3: Client Stream (WebSocket Binary)
     ClientMic --> AudioCapture
     AudioCapture -->|PCM Chunks<br/>ArrayBuffer| WSClient
-    WSClient <-->|Binary WebSocket<br/>Port 4001| WSServer
-    WSServer -->|Stream Audio| AudioRouter
+    WSClient <-->|Binary WebSocket<br/>Port 4001| WSAudioServer
+    WSAudioServer -->|Stream Audio| AudioRouter
 
     GraphQLClient -->|Mutation createSession<br/>type: CLIENT_STREAM<br/>streamConnectionId| GraphQLServer
-    GraphQLServer -->|Associate Session| WSServer
+    GraphQLServer -->|Associate Session| WSAudioServer
 
     AudioRouter --> Pipeline
 
     style ServerMic fill:#4caf50
     style FileStorage fill:#2196f3
-    style WSServer fill:#ff9800
+    style WSAudioServer fill:#ff9800
 ```
 
 ### Audio Source Handling Details
@@ -1112,11 +1180,11 @@ graph TB
 // Client UI Configuration
 const sessionInput = {
   inputSource: {
-    type: 'SERVER_AUDIO_DEVICE',
-    deviceId: 'default' // or specific device ID from server
+    type: "SERVER_AUDIO_DEVICE",
+    deviceId: "default", // or specific device ID from server
   },
-  languages: { source: 'EN', targets: ['ES', 'ZH', 'KO'] },
-  outputDestination: { type: 'LIVE_STREAM' }
+  languages: { source: "EN", targets: ["ES", "ZH", "KO"] },
+  outputDestination: { type: "LIVE_STREAM" },
 };
 
 // Client sends GraphQL mutation
@@ -1124,66 +1192,70 @@ mutation CreateSession($input: SessionInput!) {
   createSession(input: $input) { id status }
 }
 
-// Server directly accesses audio device
-const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+// Server directly accesses audio device via node-audio or similar
 // No network transmission - server processes locally
 ```
 
-#### **2. File Upload (GraphQL Multipart Request)**
+#### **2. File Upload (Base64 via GraphQL)**
 
 ```typescript
-// Client: Select file and upload
+// Client: Select file and convert to base64
 const file = document.getElementById("audioFile").files[0];
+const reader = new FileReader();
 
-// Upload via GraphQL multipart request
-const { data } = await apolloClient.mutate({
-  mutation: UPLOAD_AUDIO_FILE,
-  variables: { file },
-  context: {
-    fetchOptions: {
-      useUpload: true, // graphql-upload
+reader.onload = async () => {
+  const base64Content = reader.result.split(",")[1]; // Remove data URL prefix
+
+  // Upload via GraphQL mutation
+  const { data } = await apolloClient.mutate({
+    mutation: UPLOAD_AUDIO_FILE,
+    variables: {
+      fileName: file.name,
+      content: base64Content,
+      mimeType: file.type,
     },
-  },
-});
+  });
 
-const fileId = data.uploadAudioFile.id;
+  const fileId = data.uploadAudioFile.id;
 
-// Create session referencing uploaded file
-const sessionInput = {
-  inputSource: {
-    type: "FILE",
-    fileId: fileId,
-  },
-  languages: { source: "EN", targets: ["ES", "ZH", "KO"] },
-  outputDestination: { type: "FILE", format: "MP3" },
+  // Create session referencing uploaded file
+  const sessionInput = {
+    inputSource: {
+      type: "FILE",
+      fileId: fileId,
+    },
+    languages: { source: "EN", targets: ["ES", "ZH", "KO"] },
+    outputDestination: { type: "FILE", format: "MP3" },
+  };
 };
+
+reader.readAsDataURL(file);
 ```
 
 **Server Implementation:**
 
 ```typescript
-// Apollo Server with graphql-upload
-import { GraphQLUpload } from "graphql-upload";
-
 const resolvers = {
-  Upload: GraphQLUpload,
-
   Mutation: {
-    uploadAudioFile: async (_, { file }) => {
-      const { createReadStream, filename, mimetype } = await file;
-      const stream = createReadStream();
+    uploadAudioFile: async (
+      _,
+      { fileName, content, mimeType }: UploadInput
+    ) => {
+      // Decode base64 content
+      const buffer = Buffer.from(content, "base64");
 
       // Save to disk
-      const filePath = path.join("uploads", `${uuid()}-${filename}`);
-      await pipeline(stream, fs.createWriteStream(filePath));
+      const id = uuid();
+      const filePath = path.join("uploads", `${id}-${fileName}`);
+      await fs.writeFile(filePath, buffer);
 
-      // Analyze file (duration, format)
+      // Analyze file (duration, format) using ffmpeg
       const metadata = await analyzeAudio(filePath);
 
       return {
-        id: uuid(),
-        fileName: filename,
-        size: metadata.size,
+        id,
+        fileName,
+        size: buffer.length,
         duration: metadata.duration,
         format: metadata.format,
       };
@@ -1192,30 +1264,22 @@ const resolvers = {
 };
 ```
 
-#### **3. Client Stream (WebRTC DataChannel - Lowest Latency)**
+#### **3. Client Stream (WebSocket Binary - Recommended for Live Audio)**
 
 **Client Implementation:**
 
 ```typescript
-// Step 1: Create WebRTC peer connection
-const pc = new RTCPeerConnection({
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-});
-
+// Step 1: Connect WebSocket for audio streaming
 const streamConnectionId = uuid();
+const ws = new WebSocket(`ws://localhost:4001/audio/${streamConnectionId}`);
+ws.binaryType = "arraybuffer";
 
-// Step 2: Create data channel for audio streaming
-const audioChannel = pc.createDataChannel("audio-stream", {
-  ordered: false, // Allow out-of-order delivery for lower latency
-  maxRetransmits: 0, // Don't retransmit lost packets (real-time priority)
-});
-
-// Step 3: Capture and send audio
+// Step 2: Capture and send audio via Web Audio API + AudioWorklet
 const audioContext = new AudioContext({ sampleRate: 16000 });
 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 const source = audioContext.createMediaStreamSource(stream);
 
-// Use AudioWorklet for better performance (replaces ScriptProcessor)
+// Use AudioWorklet for low-latency processing
 await audioContext.audioWorklet.addModule("/audio-processor.js");
 const workletNode = new AudioWorkletNode(
   audioContext,
@@ -1223,51 +1287,17 @@ const workletNode = new AudioWorkletNode(
 );
 
 workletNode.port.onmessage = (event) => {
-  const { audioData } = event.data;
+  const { audioData } = event.data; // Int16Array
 
-  // Send PCM audio via WebRTC DataChannel (binary)
-  if (audioChannel.readyState === "open") {
-    audioChannel.send(audioData.buffer);
+  // Send PCM audio via WebSocket (binary)
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(audioData.buffer);
   }
 };
 
 source.connect(workletNode);
-workletNode.connect(audioContext.destination);
 
-// Step 4: WebRTC signaling via GraphQL
-audioChannel.onopen = () => {
-  console.log("Audio channel opened");
-};
-
-// Create offer
-const offer = await pc.createOffer();
-await pc.setLocalDescription(offer);
-
-// Wait for ICE gathering
-await new Promise((resolve) => {
-  if (pc.iceGatheringState === "complete") {
-    resolve();
-  } else {
-    pc.addEventListener("icegatheringstatechange", () => {
-      if (pc.iceGatheringState === "complete") resolve();
-    });
-  }
-});
-
-// Send offer to server via GraphQL
-const { data } = await apolloClient.mutate({
-  mutation: INITIATE_WEBRTC_SESSION,
-  variables: {
-    streamConnectionId,
-    offer: pc.localDescription,
-  },
-});
-
-// Receive answer from server
-const answer = new RTCSessionDescription(data.initiateWebRTCSession.answer);
-await pc.setRemoteDescription(answer);
-
-// Step 5: Create session via GraphQL
+// Step 3: Create session via GraphQL
 const sessionInput = {
   inputSource: {
     type: "CLIENT_STREAM",
@@ -1327,100 +1357,41 @@ class AudioStreamProcessor extends AudioWorkletProcessor {
 registerProcessor("audio-stream-processor", AudioStreamProcessor);
 ```
 
-**Server Implementation:**
+**Server Implementation (WebSocket):**
 
 ```typescript
-import { RTCPeerConnection, RTCSessionDescription } from "wrtc"; // Node.js WebRTC
+import { WebSocketServer } from "ws";
 
-const activeConnections = new Map(); // streamConnectionId -> peer connection
+const audioConnections = new Map<string, WebSocket>();
 
-// GraphQL resolver for WebRTC signaling
-const resolvers = {
-  Mutation: {
-    initiateWebRTCSession: async (_, { streamConnectionId, offer }) => {
-      // Create peer connection on server
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      });
+const wss = new WebSocketServer({ port: 4001 });
 
-      // Handle incoming data channel
-      pc.ondatachannel = (event) => {
-        const dataChannel = event.channel;
+wss.on("connection", (ws, req) => {
+  // Extract streamConnectionId from URL: /audio/:id
+  const streamConnectionId = req.url?.split("/audio/")[1];
+  if (!streamConnectionId) {
+    ws.close();
+    return;
+  }
 
-        dataChannel.onopen = () => {
-          console.log(`Audio channel opened for ${streamConnectionId}`);
-        };
+  audioConnections.set(streamConnectionId, ws);
 
-        dataChannel.onmessage = (event) => {
-          // Receive binary PCM audio data
-          const audioData = new Int16Array(event.data);
+  ws.on("message", (data: Buffer) => {
+    // Receive binary PCM audio data
+    const audioData = new Int16Array(
+      data.buffer,
+      data.byteOffset,
+      data.length / 2
+    );
 
-          // Route to translation pipeline
-          emitAudioChunk(streamConnectionId, audioData);
-        };
+    // Route to translation pipeline
+    emitAudioChunk(streamConnectionId, audioData);
+  });
 
-        dataChannel.onerror = (error) => {
-          console.error("DataChannel error:", error);
-        };
-      };
-
-      // Set remote description (client's offer)
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-
-      // Create answer
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      // Store connection
-      activeConnections.set(streamConnectionId, pc);
-
-      return {
-        streamConnectionId,
-        answer: pc.localDescription,
-      };
-    },
-
-    stopWebRTCSession: async (_, { streamConnectionId }) => {
-      const pc = activeConnections.get(streamConnectionId);
-      if (pc) {
-        pc.close();
-        activeConnections.delete(streamConnectionId);
-      }
-      return true;
-    },
-  },
-};
-```
-
-**GraphQL Schema Addition:**
-
-```graphql
-type Mutation {
-  # ... existing mutations ...
-
-  # WebRTC signaling
-  initiateWebRTCSession(
-    streamConnectionId: ID!
-    offer: RTCSessionDescriptionInput!
-  ): WebRTCSessionResponse!
-
-  stopWebRTCSession(streamConnectionId: ID!): Boolean!
-}
-
-input RTCSessionDescriptionInput {
-  type: String! # "offer" or "answer"
-  sdp: String! # Session Description Protocol
-}
-
-type WebRTCSessionResponse {
-  streamConnectionId: ID!
-  answer: RTCSessionDescription!
-}
-
-type RTCSessionDescription {
-  type: String!
-  sdp: String!
-}
+  ws.on("close", () => {
+    audioConnections.delete(streamConnectionId);
+  });
+});
 ```
 
 #### **4. File Path (Server-Accessible - Ideal for Testing)**
@@ -1485,41 +1456,19 @@ const resolvers = {
 };
 ```
 
-**Use Cases:**
-
-- **Local Development**: Client and server on same machine, point to local files
-- **Shared Filesystem**: Server mounted to NFS/SMB, client references network paths
-- **Testing**: Quick iteration without upload overhead
-- **Batch Processing**: Process multiple files from a watched directory
-
-**Benefits:**
-
-- No file upload latency
-- No duplicate storage (file exists only once)
-- Simpler client code (just pass path string)
-- Efficient for large files
-
-**Security Considerations:**
-
-- Whitelist allowed directories to prevent arbitrary file access
-- Validate paths to prevent directory traversal (`../../etc/passwd`)
-- Consider file permissions (server process must have read access)
-
-````
-
 ### Protocol Comparison
 
-| Aspect | Server Device | File Upload | File Path | Client Stream |
-|--------|--------------|-------------|-----------|---------------|
-| **Latency** | Lowest (~10ms) | N/A (batch) | N/A (batch) | Medium (~50-100ms) |
-| **Network Usage** | None | One-time upload | None | Continuous (~64kbps) |
-| **Use Case** | Server has mic | Remote file processing | Local/shared filesystem | Remote real-time |
-| **GraphQL Role** | Session config only | Upload + session config | Session config only | Signaling + session config |
-| **Transport** | Local device access | HTTP Multipart | Local filesystem | WebRTC DataChannel |
-| **Complexity** | Low | Low | Low | Medium-High |
-| **Best For** | Local setup | Remote clients | Testing/development | Production real-time |
+| Aspect            | Server Device  | File Upload (Base64)      | File Path           | Client Stream (WebSocket) |
+| ----------------- | -------------- | ------------------------- | ------------------- | ------------------------- |
+| **Latency**       | Lowest (~10ms) | N/A (batch)               | N/A (batch)         | Low (~50ms)               |
+| **Network Usage** | None           | One-time upload           | None                | Continuous (~64kbps)      |
+| **Use Case**      | Server has mic | Remote file processing    | Local/shared FS     | Remote real-time          |
+| **GraphQL Role**  | Session config | Upload + session config   | Session config      | Session config            |
+| **Transport**     | Local device   | GraphQL mutation (base64) | Local filesystem    | WebSocket binary          |
+| **Complexity**    | Low            | Low                       | Low                 | Low-Medium                |
+| **Best For**      | Local setup    | Remote clients            | Testing/development | Production real-time      |
 
-### GraphQL Schema (Revised for Client-Server Model)
+### GraphQL Schema
 
 ```graphql
 # ============================================
@@ -1585,17 +1534,17 @@ input SessionInput {
 
 input InputSourceConfig {
   type: InputType!
-  fileId: ID                    # For FILE_UPLOAD type
-  deviceId: String              # For SERVER_AUDIO_DEVICE type
-  streamConnectionId: String    # For CLIENT_STREAM type
-  filePath: String              # For FILE_PATH type (server-accessible path)
+  fileId: ID # For FILE type
+  deviceId: String # For SERVER_AUDIO_DEVICE type
+  streamConnectionId: String # For CLIENT_STREAM type
+  filePath: String # For FILE_PATH type (server-accessible path)
 }
 
 enum InputType {
-  SERVER_AUDIO_DEVICE  # Audio jack directly on server
-  FILE_UPLOAD          # Client uploads MP3/WAV via GraphQL multipart
-  FILE_PATH            # Server reads from accessible file path (local/network)
-  CLIENT_STREAM        # Real-time audio from client's microphone
+  SERVER_AUDIO_DEVICE # Audio jack directly on server
+  FILE # Client uploads MP3/WAV via base64
+  FILE_PATH # Server reads from accessible file path (local/network)
+  CLIENT_STREAM # Real-time audio from client's microphone via WebSocket
 }
 
 input LanguageConfig {
@@ -1635,7 +1584,7 @@ type Session {
 
 type SessionConfig {
   inputSource: InputSourceInfo!
-  languages: LanguageConfig!
+  languages: LanguageConfigOutput!
   outputDestination: OutputDestinationInfo!
 }
 
@@ -1643,6 +1592,11 @@ type InputSourceInfo {
   type: InputType!
   fileName: String
   duration: Float
+}
+
+type LanguageConfigOutput {
+  source: Language!
+  targets: [Language!]!
 }
 
 type OutputDestinationInfo {
@@ -1683,7 +1637,7 @@ type AudioChunk {
   sessionId: ID!
   language: Language!
   timestamp: Float!
-  audio: String!      # Base64 encoded audio data
+  audio: String! # Base64 encoded audio data
   format: AudioFormat!
 }
 
@@ -1721,8 +1675,12 @@ type Mutation {
   updateServerConfig(models: ModelSelectionInput!): ServerInfo!
   downloadModel(modelId: ID!): ModelDownloadJob!
 
-  # File upload
-  uploadAudioFile(file: Upload!): AudioFile!
+  # File upload (base64)
+  uploadAudioFile(
+    fileName: String!
+    content: String!
+    mimeType: String!
+  ): AudioFile!
 
   # Session management
   createSession(input: SessionInput!): Session!
@@ -1761,14 +1719,12 @@ type AudioFile {
   format: AudioFormat!
 }
 
-scalar Upload
-
 # ============================================
 # Subscriptions
 # ============================================
 
 type Subscription {
-  # Real-time translation streaming
+  # Real-time translation streaming (separate channels per language)
   streamTranscription(sessionId: ID!): TranscriptionUpdate!
   streamTranslation(sessionId: ID!, language: Language!): TranslationUpdate!
   streamAudio(sessionId: ID!, language: Language!): AudioChunk!
@@ -1782,25 +1738,25 @@ type Subscription {
   # Model download progress
   modelDownloadProgress(modelId: ID!): ModelDownloadJob!
 }
-````
+```
 
 ### Model Loading & Caching Flow
 
 ```mermaid
 flowchart TD
-    Start([User Launches App]) --> Check{Check Model Cache}
+    Start([Server Starts]) --> Check{Check Model Cache}
 
     Check -->|Models Cached| Load[Load from Disk]
     Check -->|Models Missing| Download[Download from HF]
 
-    Download --> Progress[Show Download Progress<br/>ModelStatusPanel]
+    Download --> Progress[Emit Download Progress<br/>via GraphQL Subscription]
 
     subgraph "Downloaded Models"
         M1[Silero VAD<br/>~2MB]
-        M2[Parakeet TDT ASR<br/>~1.2GB]
-        M3[NLLB Spanish<br/>~600MB]
-        M4[NLLB Chinese<br/>~600MB]
-        M5[NLLB Korean<br/>~600MB]
+        M2[Distil-Whisper Large V3<br/>~1.5GB]
+        M3[NLLB-600M Spanish<br/>~600MB]
+        M4[NLLB-600M Chinese<br/>~600MB]
+        M5[NLLB-600M Korean<br/>~600MB]
         M6[XTTS-v2<br/>~1.8GB]
     end
 
@@ -1825,13 +1781,13 @@ flowchart TD
     Cache5 --> Init
     Cache6 --> Init
 
-    Load --> Init[Initialize Workers<br/>Load Models into Memory]
+    Load --> Init[Initialize Worker Threads<br/>Load Models into Memory]
 
     Init --> Workers{Spawn Workers}
 
-    Workers --> W1[VAD Worklet<br/>10MB RAM]
-    Workers --> W2[ASR Worker<br/>1.2GB RAM]
-    Workers --> W3[Translation Workers<br/>3x 1.2GB = 3.6GB]
+    Workers --> W1[VAD Module<br/>10MB RAM]
+    Workers --> W2[ASR Worker Thread<br/>1.5GB RAM]
+    Workers --> W3[Translation Workers<br/>3x 600MB = 1.8GB]
     Workers --> W4[TTS Workers<br/>Lightweight HTTP clients]
     Workers --> W5[XTTS Python Server<br/>2GB RAM]
 
@@ -1841,7 +1797,7 @@ flowchart TD
     W4 --> Ready
     W5 --> Ready[System Ready]
 
-    Ready --> Monitor[Memory Monitoring<br/>~14GB / 16GB Used]
+    Ready --> Monitor[Memory Monitoring<br/>~10GB / 16GB Used]
 
     style Ready fill:#4caf50
     style Monitor fill:#ff9800
@@ -1855,7 +1811,7 @@ stateDiagram-v2
 
     Running --> VADError: VAD Failure
     Running --> ASRError: ASR Failure
-    Running --> TranslationError: Translation Failure
+    Running --> TranslationError: Translation Failure (1 lang)
     Running --> TTSError: TTS/XTTS Failure
     Running --> NetworkError: Network/Download Failure
     Running --> MemoryError: Out of Memory
@@ -1868,9 +1824,8 @@ stateDiagram-v2
     RetryASR --> Running: Success
     RetryASR --> Degraded: Partial functionality
 
-    TranslationError --> RetryTranslation: Retry single worker
-    RetryTranslation --> Running: Success
-    RetryTranslation --> Degraded: 2/3 languages work
+    TranslationError --> ContinueOthers: Fire-and-forget
+    ContinueOthers --> Running: 2/3 languages continue
 
     TTSError --> RetryTTS: Restart XTTS server
     RetryTTS --> Running: Success
@@ -1891,6 +1846,11 @@ stateDiagram-v2
     Critical --> FatalError: Must restart
     FatalError --> [*]
 
+    note right of ContinueOthers
+        Fire-and-forget: Failed language
+        doesn't block others
+    end note
+
     note right of Degraded
         System continues with reduced
         functionality while showing
@@ -1905,22 +1865,26 @@ stateDiagram-v2
 
 ### Key Technical Decisions
 
-1. **Client-Server Architecture**: Server handles all ML processing, client focuses on configuration and monitoring. Enables remote deployment and multi-client scenarios.
-2. **Session-Based Processing**: Each translation task is a configurable session with input source (live/file), target languages, and output destination (stream/file).
-3. **XTTS-v2 as Python Microservice**: No mature TypeScript implementation exists; Python backend with HTTP API required for prosody extraction.
-4. **NLLB-200 Distilled (600M)**: Fits 3 instances in memory (~3.6GB total).
-5. **Web Workers for Parallelism**: 3 translation workers + 3 TTS workers for simultaneous language processing (server-side).
-6. **GraphQL Subscriptions**: Standard protocol for multi-client real-time streaming over network.
-7. **On-Demand Model Downloads**: Transformers.js auto-download, cached in server's `models/` directory.
-8. **Flexible I/O**: Support both live audio streaming and file-based processing for maximum versatility.
+1. **Pure Node.js Server**: Server runs as a standalone Node.js process with `worker_threads` for parallelism. No browser context on server side.
+2. **React Web Client**: Client is a standard React web app running in the user's browser. No Electron.
+3. **WebSocket for Audio Streaming**: Simple WebSocket binary transport for live audio from client to server. No WebRTC complexity.
+4. **Separate Audio Channels**: Each target language has its own WebSocket/GraphQL subscription channel. No mixing.
+5. **Fire-and-Forget Translation**: Languages don't block each other. If Spanish fails, Chinese and Korean continue.
+6. **XTTS-v2 as Python Microservice**: No mature TypeScript implementation exists; Python backend with HTTP API required for prosody extraction.
+7. **NLLB-200 Distilled (600M)**: Fits 3 instances in memory (~1.8GB total).
+8. **Distil-Whisper Large V3**: Best accuracy/speed tradeoff available in Transformers.js. Parakeet TDT not available.
+9. **GraphQL Subscriptions**: Standard protocol for multi-client real-time streaming over network.
+10. **On-Demand Model Downloads**: Transformers.js auto-download, cached in server's `models/` directory.
+11. **Base64 File Upload**: Simple GraphQL mutation for file uploads instead of multipart.
+12. **ffmpeg via npm**: Use `@ffmpeg-installer/ffmpeg` + `fluent-ffmpeg` for audio format conversion.
 
 ### Benefits of Client-Server Architecture
 
 **Scalability:**
 
-- Single powerful server (64GB RAM) can serve multiple lightweight clients
+- Single powerful server (64GB RAM) can serve multiple lightweight browser clients
 - Easy horizontal scaling by adding more server instances
-- Clients require minimal resources (no GPU, minimal RAM)
+- Clients require only a modern browser (no installation, no GPU, minimal RAM)
 
 **Flexibility:**
 
@@ -1931,13 +1895,13 @@ stateDiagram-v2
 
 **Separation of Concerns:**
 
-- **Client**: Configuration UI, session management, monitoring
+- **Client (Browser)**: Configuration UI, session management, monitoring
 
   - Easy to update UI without touching ML code
-  - Can build web client, mobile client, CLI client
-  - Minimal dependencies (React, Apollo Client)
+  - Standard web technologies (React, Apollo Client)
+  - Works on any device with a modern browser
 
-- **Server**: ML processing, model management, pipeline orchestration
+- **Server (Node.js)**: ML processing, model management, pipeline orchestration
   - Focus on performance and accuracy
   - Independent testing and optimization
   - Can upgrade models without client changes
@@ -1951,15 +1915,15 @@ stateDiagram-v2
 
 **Use Cases Enabled:**
 
-1. **Personal Use**: Client + Server on laptop (localhost)
+1. **Personal Use**: Browser pointing to localhost server
 2. **Team Use**: Server on Mac Studio, multiple team members connect via LAN
 3. **Cloud Deployment**: Server on AWS/GCP, clients anywhere with internet
-4. **Batch Processing**: Upload files via client, server processes overnight, download results
+4. **Batch Processing**: Upload files via browser, server processes, download results
 5. **Multi-Session**: One user runs live translation while another processes files
 
 ## Implementation Roadmap
 
-### Phase 1: Foundation & Core Abstractions (Week 1)
+### Phase 1: Foundation & Core Abstractions
 
 **Environment Setup with ASDF**
 
@@ -1995,10 +1959,15 @@ stateDiagram-v2
 **Setup TypeScript & Dependencies**
 
 - Create `tsconfig.base.json` and per-package configs (strict mode enabled)
-- Update `package.json` files with dependencies
+- Update `package.json` files with dependencies:
+  - `@huggingface/transformers` (Transformers.js for Node.js)
+  - `@ffmpeg-installer/ffmpeg` + `fluent-ffmpeg` (audio processing)
+  - `ws` (WebSocket server)
+  - `@apollo/server` + `graphql-ws` (GraphQL)
+  - `comlink` (worker thread communication)
 - Run `pnpm install` across monorepo
 
-**Core Interfaces** (`projects/core/src/interfaces/`)
+**Core Interfaces** (`projects/server/src/interfaces/`)
 
 - `IASR.ts` - ASR abstraction with streaming support
 - `ITranslator.ts` - Translation abstraction for NLLB-200
@@ -2008,111 +1977,115 @@ stateDiagram-v2
 
 **ModelManager Implementation**
 
-- `ModelRegistry.ts` - Metadata for Parakeet TDT, NLLB-200, XTTS-v2, Silero VAD
+- `ModelRegistry.ts` - Metadata for Distil-Whisper, NLLB-200, XTTS-v2, Silero VAD
 - `ModelManager.ts` - On-demand download via Transformers.js, cache management
 - Test with small model (Silero VAD ~2MB)
 
-**Deliverables**: Compilable Core package, working model download system, first boundary tests
+**Deliverables**: Compilable server package, working model download system, first boundary tests
 
-### Phase 2: ASR + VAD (Week 2)
+### Phase 2: ASR + VAD
 
 **Voice Activity Detection**
 
-- Implement `SileroVAD.ts` using `@ricky0123/vad-web`
-- AudioWorklet integration for browser context
+- Implement `SileroVAD.ts` using `@ricky0123/vad-node` (Node.js variant)
 - Test with audio fixtures (silence vs speech)
 
 **Speech Recognition**
 
-- Implement `ParakeetASR.ts` using Transformers.js
+- Implement `DistilWhisperASR.ts` using Transformers.js
+- Model: `distil-whisper/distil-large-v3`
 - Streaming transcription with partial/final results
 - Handle 16kHz audio resampling
 
-**Audio Utilities** (`projects/core/src/audio/`)
+**Audio Utilities** (`projects/server/src/audio/`)
 
 - `AudioBuffer.ts` - Circular buffer for streaming
-- `AudioConverter.ts` - WAV/MP3 format conversion
+- `AudioConverter.ts` - WAV/MP3 format conversion using fluent-ffmpeg
 - `AudioResampler.ts` - Resample to 16kHz for ASR
 
 **Deliverables**: Working VAD and ASR with boundary tests, audio processing pipeline
 
-### Phase 3: Translation with Web Workers (Week 3)
+### Phase 3: Translation with Worker Threads
 
 **NLLB Translator**
 
 - Implement `NLLBTranslator.ts` for English → Spanish/Chinese/Korean
+- Model: `facebook/nllb-200-distilled-600M`
 - Single-shot translation first, then streaming
 
-**Web Worker Architecture**
+**Worker Thread Architecture**
 
 - `translation.worker.ts` - Isolated NLLB instance per language
 - `worker-pool.ts` - Manage 3 parallel workers with task queuing
-- Use Comlink for simplified message passing
+- Use Comlink for simplified message passing between main thread and workers
 
 **Memory Profiling**
 
 - Load 3 NLLB instances simultaneously
-- Verify memory usage <4GB for translations
+- Verify memory usage ~1.8GB for all translations
 
 **Deliverables**: Parallel translation for 3 languages, memory benchmarks
 
-### Phase 4: XTTS-v2 Intonation Matching (Week 4) **[PRIMARY DIFFERENTIATOR]**
+### Phase 4: XTTS-v2 Intonation Matching **[PRIMARY DIFFERENTIATOR]**
 
 **Python Backend Setup**
 
 - Create `xtts-server/` with FastAPI service
 - Endpoints: `/extract-embedding`, `/synthesize`, `/health`
-- Use TTS library for XTTS-v2 prosody extraction
+- Use TTS library (`pip install TTS`) for XTTS-v2 prosody extraction
+- Development server: `uvicorn main:app --reload --host 0.0.0.0 --port 8000`
 
 **TypeScript Client**
 
-- Implement `XTTSSTTS.ts` - HTTP client to Python backend
+- Implement `XTTSClient.ts` - HTTP client to Python backend
 - `ProsodyExtractor.ts` - Helper for speaker embedding management
-- Extract embedding from first 3-6 seconds of reference audio
+- Implement accumulation strategy (3-6 seconds of voiced audio)
 
 **Intonation Matching Flow**
 
 1. User speaks (English audio captured)
-2. Extract speaker embedding from reference audio
-3. Store embedding in pipeline context
-4. Pass embedding to all TTS synthesis calls
-5. Verify prosody preservation across Spanish/Chinese/Korean output
+2. Accumulate voiced audio (VAD-filtered) until 3-6 seconds
+3. Extract speaker embedding from reference audio
+4. Store embedding in pipeline context (locked for session)
+5. Pass embedding to all TTS synthesis calls
+6. Verify prosody preservation across Spanish/Chinese/Korean output
 
 **TTS Worker Pool**
 
-- `tts.worker.ts` - Calls XTTS API
+- `tts.worker.ts` - Calls XTTS API (lightweight HTTP calls)
 - 3 workers for parallel synthesis
 
 **Deliverables**: Working intonation matching, demo showing voice preservation
 
-### Phase 5: Pipeline Orchestration (Week 5)
+### Phase 5: Pipeline Orchestration
 
 **TranslationPipeline**
 
 - Orchestrate VAD → ASR → Translation (3 langs) → TTS (3 langs)
+- Fire-and-forget architecture (languages don't block each other)
 - Manage worker lifecycle and error handling
 - Async generator architecture for streaming
 
 **PipelineContext**
 
 - Shared state: speaker embedding, session config, active languages
-- Event bus for status updates
+- Event bus for status updates (PubSub)
 
 **End-to-End Testing**
 
 - Full pipeline test with real audio
 - Measure latency (target: <4s end-to-end)
-- Profile memory usage (target: <6GB total)
+- Profile memory usage (target: <10GB total)
 
 **Deliverables**: Working pipeline, performance benchmarks
 
-### Phase 6: GraphQL API (Week 6)
+### Phase 6: GraphQL API & WebSocket Server
 
-**Schema Definition** (`projects/api/src/schema/schema.graphql`)
+**Schema Definition** (`projects/server/src/schema/schema.graphql`)
 
-- Queries: `health`, `modelStatus`, `listModels`, `sessionInfo`
-- Mutations: `startPipeline`, `stopPipeline`, `downloadModel`, `updateSpeakerEmbedding`
-- Subscriptions: `streamTranscription`, `streamTranslation`, `streamAudio`, `pipelineStatus`
+- Queries: `serverInfo`, `availableModels`, `session`, `activeSessions`
+- Mutations: `createSession`, `stopSession`, `uploadAudioFile`, `downloadModel`
+- Subscriptions: `streamTranscription`, `streamTranslation`, `streamAudio`, `sessionStatus`
 
 **Apollo Server Setup**
 
@@ -2120,45 +2093,52 @@ stateDiagram-v2
 - Implement resolvers (thin wrappers around Core services)
 - Setup PubSub for subscription events
 
+**WebSocket Audio Server**
+
+- Separate WebSocket server on port 4001 for binary audio streaming
+- Handle `streamConnectionId` association with GraphQL sessions
+
 **Session Management**
 
 - `SessionManager.ts` - Track client sessions, cleanup on disconnect
 - Support multiple concurrent clients
 
-**Deliverables**: Running GraphQL server, working subscriptions, integration tests
+**Deliverables**: Running GraphQL server, WebSocket audio server, working subscriptions, integration tests
 
-### Phase 7: Electron Client (Week 7-8)
+### Phase 7: React Web Client
 
-**Electron Setup**
+**Vite + React Setup**
 
-- Vite configuration for Electron build
-- Main process, preload script, renderer setup
+- `projects/web-client/` with Vite configuration
+- React 18 + TypeScript + MUI
 
 **React + MUI Components**
 
 - `TranscriptionView` - Live English transcription display
-- `TranslationView` - 3-panel layout for Spanish/Chinese/Korean
+- `TranslationView` - 3-panel layout for Spanish/Chinese/Korean (separate audio players)
 - `AudioControls` - Start/stop, volume, language selection
 - `ModelStatus` - Download progress indicators
+- `ServerConnection` - Server URL configuration
 
 **Apollo Client Integration**
 
 - GraphQL subscriptions for real-time updates
-- State management with Zustand
+- State management with Zustand or React Context
 
 **Audio I/O**
 
 - Microphone access via Web Audio API
-- AudioPlayer for TTS output (3 channels)
-- AudioWorklet for VAD processing
+- AudioWorklet for low-latency capture
+- Separate audio players per language (no mixing)
+- WebSocket client for binary audio streaming to server
 
-**Deliverables**: Working Electron app with live translation UI
+**Deliverables**: Working React web app with live translation UI
 
-### Phase 8: Testing & Optimization (Week 9)
+### Phase 8: Testing & Optimization
 
 **Comprehensive Testing**
 
-- Boundary tests for all Core modules
+- Boundary tests for all server modules
 - API resolver integration tests
 - Client component tests
 
@@ -2170,7 +2150,7 @@ stateDiagram-v2
 
 **Error Handling**
 
-- Graceful degradation on translation failures
+- Graceful degradation on translation failures (fire-and-forget)
 - Retry logic for model loading
 - User-friendly error messages
 
@@ -2180,20 +2160,24 @@ stateDiagram-v2
 
 **Allocation Strategy**:
 
-- OS + System: 3GB
-- Electron + Browser: 2GB
-- Parakeet TDT (ASR): 1.2GB
-- NLLB-200 × 3 instances: 3.6GB (1.2GB each)
-- XTTS-v2 (Python backend): 2GB
-- Silero VAD: 10MB
-- Working memory + buffers: 3GB
-- **Total**: ~14GB (within 16GB limit)
+| Component                     | Memory  | Notes                          |
+| ----------------------------- | ------- | ------------------------------ |
+| OS + System                   | 3.0 GB  | macOS baseline                 |
+| Node.js Server Process        | 0.5 GB  | Base process + V8 heap         |
+| Distil-Whisper Large V3 (ASR) | 1.5 GB  | Via Transformers.js in Node.js |
+| NLLB-200-distilled-600M × 3   | 1.8 GB  | 600MB each                     |
+| XTTS-v2 (Python backend)      | 2.0 GB  | Separate process               |
+| Silero VAD                    | 0.01 GB | Negligible                     |
+| Working memory + buffers      | 1.0 GB  | Streaming buffers              |
+| **Total Server**              | ~10 GB  | Leaves ~6GB headroom           |
+
+**Note**: React web client runs in user's browser, not counted against server memory.
 
 **Optimizations**:
 
-- Use quantized models if available (int8 reduces NLLB to ~400MB each)
+- Use quantized models if available (int8 reduces NLLB further)
 - Lazy load/unload inactive language models
-- Web Worker isolation prevents memory leaks
+- Worker thread isolation prevents memory leaks
 - Implement memory monitoring with alerts
 
 ## Critical Files to Create (Priority Order)
@@ -2201,43 +2185,43 @@ stateDiagram-v2
 ### Immediate - Phase 1
 
 1. **`tsconfig.base.json`** - Root TypeScript configuration
-2. **`projects/core/tsconfig.json`** - Core package TypeScript config
-3. **`projects/core/package.json`** - Update with dependencies (@huggingface/transformers, onnxruntime-web, comlink)
-4. **`projects/core/vite.config.ts`** - Build configuration for library mode
-5. **`projects/core/src/interfaces/ITTS.ts`** - TTS interface (critical for intonation matching)
-6. **`projects/core/src/interfaces/IASR.ts`** - ASR interface
-7. **`projects/core/src/interfaces/ITranslator.ts`** - Translation interface
-8. **`projects/core/src/interfaces/IModelManager.ts`** - Model management interface
-9. **`projects/core/src/services/model-manager/ModelRegistry.ts`** - Model metadata
-10. **`projects/core/src/services/model-manager/ModelManager.ts`** - Download/cache logic
+2. **`projects/server/tsconfig.json`** - Server package TypeScript config
+3. **`projects/server/package.json`** - Update with dependencies (@huggingface/transformers, @ffmpeg-installer/ffmpeg, fluent-ffmpeg, ws, comlink)
+4. **`projects/server/vite.config.ts`** - Build configuration for Node.js
+5. **`projects/server/src/interfaces/ITTS.ts`** - TTS interface (critical for intonation matching)
+6. **`projects/server/src/interfaces/IASR.ts`** - ASR interface
+7. **`projects/server/src/interfaces/ITranslator.ts`** - Translation interface
+8. **`projects/server/src/interfaces/IModelManager.ts`** - Model management interface
+9. **`projects/server/src/services/model-manager/ModelRegistry.ts`** - Model metadata
+10. **`projects/server/src/services/model-manager/ModelManager.ts`** - Download/cache logic
 
 ### High Priority - Phase 2-3
 
-11. **`projects/core/src/services/vad/SileroVAD.ts`** - VAD implementation
-12. **`projects/core/src/services/asr/ParakeetASR.ts`** - ASR implementation
-13. **`projects/core/src/services/translation/NLLBTranslator.ts`** - Translation implementation
-14. **`projects/core/src/workers/translation.worker.ts`** - Web Worker for translation
-15. **`projects/core/src/workers/worker-pool.ts`** - Worker pool manager
+11. **`projects/server/src/services/vad/SileroVAD.ts`** - VAD implementation
+12. **`projects/server/src/services/asr/DistilWhisperASR.ts`** - ASR implementation
+13. **`projects/server/src/services/translation/NLLBTranslator.ts`** - Translation implementation
+14. **`projects/server/src/workers/translation.worker.ts`** - Worker thread for translation
+15. **`projects/server/src/workers/worker-pool.ts`** - Worker pool manager
 
 ### Critical for Differentiator - Phase 4
 
 16. **`xtts-server/main.py`** - XTTS-v2 Python backend (FastAPI)
-17. **`xtts-server/requirements.txt`** - Python dependencies
-18. **`projects/core/src/services/tts/XTTSSTTS.ts`** - XTTS client
-19. **`projects/core/src/services/tts/ProsodyExtractor.ts`** - Speaker embedding helper
+17. **`xtts-server/pyproject.toml`** - Python dependencies (Poetry)
+18. **`projects/server/src/services/tts/XTTSClient.ts`** - XTTS HTTP client
+19. **`projects/server/src/services/tts/ProsodyExtractor.ts`** - Speaker embedding helper
 
 ### Pipeline & API - Phase 5-6
 
-20. **`projects/core/src/pipeline/TranslationPipeline.ts`** - Main orchestration
-21. **`projects/api/src/schema/schema.graphql`** - GraphQL schema
-22. **`projects/api/src/server.ts`** - Apollo Server setup
-23. **`projects/api/src/resolvers/Subscription.ts`** - Streaming resolvers
+20. **`projects/server/src/pipeline/TranslationPipeline.ts`** - Main orchestration
+21. **`projects/server/src/schema/schema.graphql`** - GraphQL schema
+22. **`projects/server/src/server.ts`** - Apollo Server + WebSocket setup
+23. **`projects/server/src/resolvers/Subscription.ts`** - Streaming resolvers
 
 ### Client - Phase 7
 
-24. **`projects/client-app/vite.config.ts`** - Electron + Vite configuration
-25. **`projects/client-app/src/apollo/client.ts`** - Apollo Client setup
-26. **`projects/client-app/src/components/TranslationView/TranslationView.tsx`** - Main UI
+24. **`projects/web-client/vite.config.ts`** - Vite configuration for React
+25. **`projects/web-client/src/apollo/client.ts`** - Apollo Client setup
+26. **`projects/web-client/src/components/TranslationView/TranslationView.tsx`** - Main UI
 
 ## Immediate Next Steps
 
@@ -2246,7 +2230,7 @@ To begin implementation immediately:
 1. **Update package.json files** with confirmed dependencies
 2. **Create TypeScript configurations** (root + per-package)
 3. **Run `pnpm install`** to install all dependencies
-4. **Create Core interface files** (IASR, ITranslator, ITTS, IVAD, IModelManager)
+4. **Create server interface files** (IASR, ITranslator, ITTS, IVAD, IModelManager)
 5. **Implement ModelManager** with on-demand download logic
 6. **Write first boundary test** for ModelManager
 7. **Verify model download** works with Silero VAD (small 2MB model)
@@ -2257,20 +2241,30 @@ This plan provides a clear, actionable path to building Voice Bridge with all am
 
 **Confirmed Decisions:**
 
+- ✅ Pure Node.js server with `worker_threads` (not Web Workers)
+- ✅ React web client in browser (not Electron)
+- ✅ WebSocket binary for audio streaming (not WebRTC)
+- ✅ Distil-Whisper Large V3 for ASR (Parakeet TDT not available in Transformers.js)
+- ✅ NLLB-200-distilled-600M for translation (~600MB per language)
 - ✅ On-demand model downloads (not bundled)
-- ✅ Multi-client GraphQL API for scalability
+- ✅ Multi-client GraphQL API with subscriptions
 - ✅ All 3 languages (Spanish, Chinese, Korean) from start
 - ✅ Voice intonation matching as PRIMARY goal (XTTS-v2)
+- ✅ Separate audio channels per language (no mixing)
+- ✅ Fire-and-forget translation (languages don't block each other)
+- ✅ Base64 file upload via GraphQL (not multipart)
+- ✅ ffmpeg via npm (`@ffmpeg-installer/ffmpeg`)
 - ✅ Cross-platform production, Apple Silicon primary testing
-- ✅ React + TypeScript + MUI, Vite build, Silero VAD
+- ✅ Memory budget: ~10GB server, ~6GB headroom on 16GB machine
 - ✅ Boundary tests for each module
 
 **Key Success Factors:**
 
 1. XTTS-v2 Python backend for prosody extraction
-2. Web Worker parallelism for 3 simultaneous translations
-3. Memory management to stay under 16GB
+2. Worker thread parallelism for 3 simultaneous translations
+3. Memory management to stay under 10GB
 4. GraphQL subscriptions for real-time streaming
-5. Clean Core/API/Client separation
+5. Clean Server/Client separation
+6. Prosody extraction with accumulation strategy and fallback
 
-The project is ambitious but feasible, with XTTS-v2 intonation matching providing clear differentiation. The 8-week phased approach ensures steady progress with testable milestones.
+The project is ambitious but feasible, with XTTS-v2 intonation matching providing clear differentiation. The phased approach ensures steady progress with testable milestones.
