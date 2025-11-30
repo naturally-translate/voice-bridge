@@ -1961,6 +1961,37 @@ stateDiagram-v2
 
 ### Phase 1: Foundation & Core Abstractions (Week 1)
 
+**Environment Setup with ASDF**
+
+- Install ASDF version manager: <https://asdf-vm.com/guide/getting-started.html>
+- Create `.tool-versions` file in repository root:
+
+  ```text
+  nodejs 20.11.1
+  python 3.11.8
+  poetry 1.8.2
+  pnpm 10.7.0
+  ```
+
+- Install ASDF plugins:
+
+  ```bash
+  asdf plugin add nodejs https://github.com/asdf-vm/asdf-nodejs.git
+  asdf plugin add python https://github.com/asdf-community/asdf-python.git
+  asdf plugin add poetry https://github.com/asdf-community/asdf-poetry.git
+  asdf plugin add pnpm https://github.com/jonathanmorley/asdf-pnpm.git
+  ```
+
+- Bootstrap environment: `asdf install` (reads `.tool-versions` and installs all runtimes)
+- Verify installations:
+
+  ```bash
+  node --version    # 20.11.1
+  python --version  # 3.11.8
+  poetry --version  # 1.8.2
+  pnpm --version    # 10.7.0
+  ```
+
 **Setup TypeScript & Dependencies**
 
 - Create `tsconfig.base.json` and per-package configs (strict mode enabled)
