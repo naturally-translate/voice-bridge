@@ -12,7 +12,7 @@ The workspace is managed with `pnpm` (`pnpm-workspace.yaml` scopes all `projects
 
 ## Getting started
 
-1) Prerequisites: Node.js 20+, `pnpm` (see `packageManager` in `package.json`).
+1) Prerequisites: Node.js 22.12+ (LTS), `pnpm` 10.x (see `packageManager` in `package.json`).
 2) Install dependencies: `pnpm install`.
 3) Develop per package:
    - Core: `pnpm --filter core test` / `pnpm --filter core dev` (when added).
