@@ -17,10 +17,10 @@ The system follows a **client-server model** where:
 
 **Core Features:**
 
-1. ✅ Multi-client support via GraphQL API with subscriptions
+1. ✅ Multi-client support via GraphQL API with subscriptions (text/control) plus binary WebSocket channels for audio
 2. ✅ Three simultaneous languages: Spanish, Chinese, Korean
 3. ✅ **Voice intonation matching and mimicry (XTTS-v2) - PRIMARY GOAL**
-4. ✅ Streaming for text translation and audio output
+4. ✅ Streaming for text translation via GraphQL and audio output via binary WebSockets
 5. ✅ On-demand model downloads (not bundled with application)
 6. ✅ Multi-format audio input (WAV, MP3 via ffmpeg)
 7. ✅ Decoupled architecture with model swapping capability
@@ -35,8 +35,8 @@ The system follows a **client-server model** where:
 - **ASR**: Distil-Whisper Large V3 (via Transformers.js) — _Parakeet TDT not available in Transformers.js_
 - **Translation**: NLLB-200-distilled-600M (via Transformers.js)
 - **TTS**: XTTS-v2 with prosody embeddings for intonation matching (Python microservice)
-- **API**: GraphQL (Apollo Server + Apollo Client)
-- **Audio Streaming**: WebSocket binary (not WebRTC)
+- **API**: GraphQL (Apollo Server + Apollo Client) for control + text streams
+- **Audio Streaming**: WebSocket binary in/out (audio input + per-language audio output; not WebRTC)
 - **Audio Processing**: `@ffmpeg-installer/ffmpeg` + `fluent-ffmpeg`
 - **Testing**: Vitest with boundary tests for each module
 
@@ -75,11 +75,12 @@ graph TB
         AudioOut[Audio Player - Output]
     end
 
-    subgraph "API Layer (GraphQL)"
+    subgraph "API Layer (GraphQL + Audio WS)"
         AS[Apollo Server]
         WS[WebSocket Subscriptions]
         SM[Session Manager]
         PS[PubSub Event Bus]
+        AWS[Audio WebSocket<br/>(Binary In/Out)]
     end
 
     subgraph "Core Layer (Node.js Server with worker_threads)"
@@ -114,8 +115,10 @@ graph TB
     AS --> SM
     AS --> PS
 
-    AudioIn -->|PCM Audio| TP
-    TP -->|Translated Audio| AudioOut
+    AudioIn -->|Binary Audio| AWS
+    AWS -->|PCM Audio| TP
+    TP -->|Translated Audio| AWS
+    AWS -->|Per-Language Audio| AudioOut
 
     TP --> VAD
     VAD -->|Voice Activity| ASR
@@ -154,6 +157,7 @@ sequenceDiagram
     participant U as User (Speaking)
     participant UI as Client UI (Browser)
     participant API as GraphQL API
+    participant AudioWS as Audio WebSocket (per language)
     participant VAD as Voice Activity Detection
     participant ASR as Distil-Whisper ASR
     participant T as Translation Workers
@@ -164,7 +168,7 @@ sequenceDiagram
     U->>UI: Start speaking
     UI->>API: Subscribe to streamTranscription
     UI->>API: Subscribe to streamTranslation (per language)
-    UI->>API: Subscribe to streamAudio (per language)
+    UI->>AudioWS: Connect audio output channels (per language)
 
     loop Audio Stream
         UI->>VAD: Send audio chunks (WebSocket binary)
@@ -196,22 +200,22 @@ sequenceDiagram
                 T->>TTS: Spanish text + speaker embedding
                 TTS->>XTTS: Synthesize (ES, embedding)
                 XTTS->>TTS: Spanish audio with matched intonation
-                TTS->>API: Emit audio event
-                API->>UI: Stream Spanish audio (dedicated channel)
+                TTS->>AudioWS: Emit Spanish audio (dedicated channel)
+                AudioWS->>UI: Stream Spanish audio
                 UI->>Audio: Play Spanish audio
             and
                 T->>TTS: Chinese text + speaker embedding
                 TTS->>XTTS: Synthesize (ZH, embedding)
                 XTTS->>TTS: Chinese audio with matched intonation
-                TTS->>API: Emit audio event
-                API->>UI: Stream Chinese audio (dedicated channel)
+                TTS->>AudioWS: Emit Chinese audio (dedicated channel)
+                AudioWS->>UI: Stream Chinese audio
                 UI->>Audio: Play Chinese audio
             and
                 T->>TTS: Korean text + speaker embedding
                 TTS->>XTTS: Synthesize (KO, embedding)
                 XTTS->>TTS: Korean audio with matched intonation
-                TTS->>API: Emit audio event
-                API->>UI: Stream Korean audio (dedicated channel)
+                TTS->>AudioWS: Emit Korean audio (dedicated channel)
+                AudioWS->>UI: Stream Korean audio
                 UI->>Audio: Play Korean audio
             end
         end
@@ -482,27 +486,24 @@ pie title Memory Budget (16GB Apple Silicon)
 | React Web UI (browser, client) | —       | Runs in user's browser         |
 | **Total Server**               | ~10 GB  | Leaves ~6GB headroom           |
 
-### GraphQL Subscription Flow
+### GraphQL + Audio WebSocket Flow
 
 ```mermaid
 sequenceDiagram
     participant Client as Client UI (Browser)
     participant Server as GraphQL Server
+    participant AudioWS as Audio WebSocket (binary)
     participant PubSub as PubSub Event Bus
     participant Pipeline as Translation Pipeline
 
-    Client->>Server: WebSocket Connect
+    Client->>Server: GraphQL WebSocket Connect
     Server->>Client: Connection Established
 
     Client->>Server: subscription { streamTranscription }
     Client->>Server: subscription { streamTranslation(lang: "es") }
     Client->>Server: subscription { streamTranslation(lang: "zh") }
     Client->>Server: subscription { streamTranslation(lang: "ko") }
-    Client->>Server: subscription { streamAudio(lang: "es") }
-    Client->>Server: subscription { streamAudio(lang: "zh") }
-    Client->>Server: subscription { streamAudio(lang: "ko") }
-
-    Server->>Client: Subscriptions Active
+    Client->>AudioWS: Connect audio output channels (es/zh/ko)
 
     loop Real-time Processing
         Pipeline->>PubSub: Publish transcription event
@@ -521,17 +522,10 @@ sequenceDiagram
         PubSub->>Server: Event received
         Server->>Client: { data: { text: "안녕하세요", lang: "ko" } }
 
-        Pipeline->>PubSub: Publish audio event (es)
-        PubSub->>Server: Event received
-        Server->>Client: { data: { audio: base64, lang: "es" } }
-
-        Pipeline->>PubSub: Publish audio event (zh)
-        PubSub->>Server: Event received
-        Server->>Client: { data: { audio: base64, lang: "zh" } }
-
-        Pipeline->>PubSub: Publish audio event (ko)
-        PubSub->>Server: Event received
-        Server->>Client: { data: { audio: base64, lang: "ko" } }
+        Pipeline->>AudioWS: Send audio chunk (es, binary)
+        Pipeline->>AudioWS: Send audio chunk (zh, binary)
+        Pipeline->>AudioWS: Send audio chunk (ko, binary)
+        AudioWS->>Client: Stream per-language audio channels
     end
 
     Client->>Server: mutation { stopPipeline }
@@ -806,7 +800,7 @@ A standalone Node.js server process that can run independently:
 - Model management (on-demand downloads via Transformers.js)
 - Audio processing utilities (ffmpeg for format conversion)
 - GraphQL API with WebSocket subscriptions
-- WebSocket server for binary audio streaming from clients
+- WebSocket server for binary audio streaming (client input + per-language output)
 - Session management for multi-client support
 - Can run locally or on remote machine
 - Accepts audio input (live stream or file)
@@ -891,11 +885,11 @@ graph TB
     UI --> Apollo_Client
     Apollo_Client <-->|GraphQL/WebSocket<br/>Can be over network| GQL_Server
     AudioCapture <-->|WebSocket Binary| WS_Audio
+    AudioPlayerES <-->|Binary Audio ES| WS_Audio
+    AudioPlayerZH <-->|Binary Audio ZH| WS_Audio
+    AudioPlayerKO <-->|Binary Audio KO| WS_Audio
 
     FileUpload -.->|Base64 via GraphQL| GQL_Server
-    GQL_Server -.->|Audio Subscription ES| AudioPlayerES
-    GQL_Server -.->|Audio Subscription ZH| AudioPlayerZH
-    GQL_Server -.->|Audio Subscription KO| AudioPlayerKO
 
     GQL_Server --> SessionMgr
     WS_Audio --> SessionMgr
@@ -1012,7 +1006,11 @@ graph TB
     subgraph "GraphQL Operations"
         Queries[Queries:<br/>- serverInfo<br/>- availableModels<br/>- sessionStatus]
         Mutations[Mutations:<br/>- updateServerConfig<br/>- createSession<br/>- stopSession<br/>- uploadAudioFile (base64)]
-        Subscriptions[Subscriptions:<br/>- streamTranscription<br/>- streamTranslation(lang)<br/>- streamAudio(lang)<br/>- sessionStatus]
+        Subscriptions[Subscriptions:<br/>- streamTranscription<br/>- streamTranslation(lang)<br/>- sessionStatus]
+    end
+
+    subgraph "Audio WebSocket"
+        AudioOut[Binary audio channels<br/>per target language]
     end
 
     ServerConfig -.->|Query| Queries
@@ -1025,6 +1023,7 @@ graph TB
     Display -.->|Subscribe| Subscriptions
     SessionStatus -.->|Subscribe| Subscriptions
     ServerStats -.->|Subscribe| Subscriptions
+    TargetPanels -.->|Listen| AudioOut
 
     style ConfigTab fill:#ff9800
     style SessionTab fill:#2196f3
@@ -1084,9 +1083,9 @@ sequenceDiagram
     UI->>Server: Subscribe to streamTranslation(sessionId, "es")
     UI->>Server: Subscribe to streamTranslation(sessionId, "zh")
     UI->>Server: Subscribe to streamTranslation(sessionId, "ko")
-    UI->>Server: Subscribe to streamAudio(sessionId, "es")
-    UI->>Server: Subscribe to streamAudio(sessionId, "zh")
-    UI->>Server: Subscribe to streamAudio(sessionId, "ko")
+    UI->>Server: Open audio output WebSocket (sessionId, "es")
+    UI->>Server: Open audio output WebSocket (sessionId, "zh")
+    UI->>Server: Open audio output WebSocket (sessionId, "ko")
 
     Note over User,Server: Step 4: Monitor Results
 
@@ -1095,7 +1094,7 @@ sequenceDiagram
     loop Real-time Translation
         Server->>UI: Stream transcription updates
         Server->>UI: Stream translation updates (per language)
-        Server->>UI: Stream audio data (per language, dedicated channel)
+        Server->>UI: Stream audio data via WebSocket (per language, dedicated channel)
         UI->>User: Display text & play audio
     end
 
@@ -1125,7 +1124,8 @@ graph TB
             AudioCapture[Web Audio API<br/>Capture + AudioWorklet]
             FileReader[FileReader API]
             GraphQLClient[GraphQL Client<br/>Apollo]
-            WSClient[WebSocket Client<br/>Binary Audio Stream]
+            WSClient[WebSocket Client<br/>Audio Input (binary)]
+            WSOutClient[WebSocket Client<br/>Audio Output (binary, per language)]
         end
     end
 
@@ -1134,7 +1134,7 @@ graph TB
 
         subgraph "Server Endpoints"
             GraphQLServer[GraphQL Server<br/>Port 4000]
-            WSAudioServer[WebSocket Audio Server<br/>Port 4001]
+            WSAudioServer[WebSocket Audio Server<br/>Port 4001 (in/out)]
             FileStorage[File Storage<br/>uploads/]
         end
 
@@ -1166,6 +1166,8 @@ graph TB
     GraphQLServer -->|Associate Session| WSAudioServer
 
     AudioRouter --> Pipeline
+    Pipeline -->|Audio out (per language)| WSAudioServer
+    WSAudioServer <-->|Binary WebSocket<br/>Port 4001| WSOutClient
 
     style ServerMic fill:#4caf50
     style FileStorage fill:#2196f3
@@ -1470,6 +1472,8 @@ const resolvers = {
 
 ### GraphQL Schema
 
+Audio output is delivered over dedicated binary WebSocket channels; the GraphQL schema below covers control and text streaming only.
+
 ```graphql
 # ============================================
 # Server Configuration
@@ -1616,7 +1620,7 @@ enum SessionStatus {
 }
 
 # ============================================
-# Real-time Streaming Data
+# Real-time Streaming Data (GraphQL - text/control)
 # ============================================
 
 type TranscriptionUpdate {
@@ -1631,14 +1635,6 @@ type TranslationUpdate {
   language: Language!
   timestamp: Float!
   text: String!
-}
-
-type AudioChunk {
-  sessionId: ID!
-  language: Language!
-  timestamp: Float!
-  audio: String! # Base64 encoded audio data
-  format: AudioFormat!
 }
 
 type SessionStatusUpdate {
@@ -1727,7 +1723,6 @@ type Subscription {
   # Real-time translation streaming (separate channels per language)
   streamTranscription(sessionId: ID!): TranscriptionUpdate!
   streamTranslation(sessionId: ID!, language: Language!): TranslationUpdate!
-  streamAudio(sessionId: ID!, language: Language!): AudioChunk!
 
   # Session status updates
   sessionStatus(sessionId: ID!): SessionStatusUpdate!
@@ -2085,7 +2080,7 @@ stateDiagram-v2
 
 - Queries: `serverInfo`, `availableModels`, `session`, `activeSessions`
 - Mutations: `createSession`, `stopSession`, `uploadAudioFile`, `downloadModel`
-- Subscriptions: `streamTranscription`, `streamTranslation`, `streamAudio`, `sessionStatus`
+- Subscriptions: `streamTranscription`, `streamTranslation`, `sessionStatus`
 
 **Apollo Server Setup**
 
@@ -2095,7 +2090,7 @@ stateDiagram-v2
 
 **WebSocket Audio Server**
 
-- Separate WebSocket server on port 4001 for binary audio streaming
+- Separate WebSocket server on port 4001 for binary audio streaming (input + per-language output)
 - Handle `streamConnectionId` association with GraphQL sessions
 
 **Session Management**
@@ -2122,7 +2117,7 @@ stateDiagram-v2
 
 **Apollo Client Integration**
 
-- GraphQL subscriptions for real-time updates
+- GraphQL subscriptions for real-time text/status updates
 - State management with Zustand or React Context
 
 **Audio I/O**
@@ -2131,6 +2126,7 @@ stateDiagram-v2
 - AudioWorklet for low-latency capture
 - Separate audio players per language (no mixing)
 - WebSocket client for binary audio streaming to server
+- WebSocket clients for receiving per-language audio output (binary)
 
 **Deliverables**: Working React web app with live translation UI
 
@@ -2243,11 +2239,11 @@ This plan provides a clear, actionable path to building Voice Bridge with all am
 
 - ✅ Pure Node.js server with `worker_threads` (not Web Workers)
 - ✅ React web client in browser (not Electron)
-- ✅ WebSocket binary for audio streaming (not WebRTC)
+- ✅ WebSocket binary for audio streaming in/out (not WebRTC; audio not sent over GraphQL)
 - ✅ Distil-Whisper Large V3 for ASR (Parakeet TDT not available in Transformers.js)
 - ✅ NLLB-200-distilled-600M for translation (~600MB per language)
 - ✅ On-demand model downloads (not bundled)
-- ✅ Multi-client GraphQL API with subscriptions
+- ✅ Multi-client GraphQL API with subscriptions (text/control only)
 - ✅ All 3 languages (Spanish, Chinese, Korean) from start
 - ✅ Voice intonation matching as PRIMARY goal (XTTS-v2)
 - ✅ Separate audio channels per language (no mixing)
@@ -2263,7 +2259,7 @@ This plan provides a clear, actionable path to building Voice Bridge with all am
 1. XTTS-v2 Python backend for prosody extraction
 2. Worker thread parallelism for 3 simultaneous translations
 3. Memory management to stay under 10GB
-4. GraphQL subscriptions for real-time streaming
+4. GraphQL subscriptions for text/control; binary WebSockets for audio
 5. Clean Server/Client separation
 6. Prosody extraction with accumulation strategy and fallback
 
