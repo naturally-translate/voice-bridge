@@ -2,8 +2,6 @@
 
 ## Executive Summary
 
-**Overall Feasibility: YES - Highly Attainable**
-
 Voice Bridge is a real-time multi-language translation system with **voice intonation matching** as the primary differentiator. The requirements are feasible and well-architected for a 2025 Node.js/React/WASM ML stack.
 
 **Architecture: Client-Server Separation**
@@ -21,22 +19,22 @@ The system follows a **client-server model** where:
 2. ✅ Three simultaneous languages: Spanish, Chinese, Korean
 3. ✅ **Voice intonation matching and mimicry (XTTS-v2) - PRIMARY GOAL**
 4. ✅ Streaming for text translation via GraphQL and audio output via binary WebSockets
-5. ✅ On-demand model downloads (not bundled with application)
+5. ✅ On-demand model downloads
 6. ✅ Multi-format audio input (WAV, MP3 via ffmpeg)
 7. ✅ Decoupled architecture with model swapping capability
 8. ✅ Fire-and-forget translation (languages don't block each other)
 
 **Technology Stack (Confirmed):**
 
-- **UI Framework**: React + TypeScript + Material UI (MUI) — **Web app in browser** (not Electron)
+- **UI Framework**: React + TypeScript + Material UI (MUI) — **Web app in browser**
 - **Server Runtime**: Pure Node.js with `worker_threads` for parallelism
 - **Build Tool**: Vite
 - **VAD**: Silero VAD
-- **ASR**: Distil-Whisper Large V3 (via Transformers.js) — _Parakeet TDT not available in Transformers.js_
+- **ASR**: Distil-Whisper Large V3 (via Transformers.js)
 - **Translation**: NLLB-200-distilled-600M (via Transformers.js)
 - **TTS**: XTTS-v2 with prosody embeddings for intonation matching (Python microservice)
 - **API**: GraphQL (Apollo Server + Apollo Client) for control + text streams
-- **Audio Streaming**: WebSocket binary in/out (audio input + per-language audio output; not WebRTC)
+- **Audio Streaming**: WebSocket binary in/out (one input socket + one output socket per target language)
 - **Audio Processing**: `@ffmpeg-installer/ffmpeg` + `fluent-ffmpeg`
 - **Testing**: Vitest with boundary tests for each module
 
@@ -527,7 +525,7 @@ sequenceDiagram
     Client->>Server: subscription { streamTranslation(lang: "es") }
     Client->>Server: subscription { streamTranslation(lang: "zh") }
     Client->>Server: subscription { streamTranslation(lang: "ko") }
-    Client->>AudioWS: Connect audio output channels (es/zh/ko)
+    Client->>AudioWS: Connect audio input (mono) + per-language output sockets
 
     loop Real-time Processing
         Pipeline->>PubSub: Publish transcription event
@@ -1519,7 +1517,32 @@ const resolvers = {
 
 ### GraphQL Schema
 
-Audio output is delivered over dedicated binary WebSocket channels; the GraphQL schema below covers control and text streaming only.
+Audio input/output is delivered over binary WebSocket; output uses one socket per target language. The GraphQL schema below covers control and text streaming only.
+
+### Transport Specification (binary WebSocket, per-language output)
+
+- **Sockets:** 1 input socket (client → server), 1 output socket per target language (server → client), per session.
+- **Handshake (both directions):** First JSON message `{ "type": "handshake", "sessionId": "...", "role": "input"|"output", "lang": "en|es|zh|ko" }`; server responds `{ "type": "ack" }` or `{ "type": "error", "reason": "..." }`. For input, `lang` is `en`.
+- **Audio format:** 16kHz, 16-bit PCM, little-endian, mono. Client resamples before send; server emits the same format.
+- **Frame envelope (binary):** 1-byte version (0x01) + 1-byte stream type (`0x01=input`, `0x02=output`) + 1-byte language (`0x00=en/input`, `0x01=es`, `0x02=zh`, `0x03=ko`) + 4-byte unsigned seq + 8-byte unsigned timestamp (us since session start) + PCM payload. `lang` redundantly tags the stream for safety.
+- **Backpressure:** If a server send buffer grows beyond threshold, drop oldest unsent output frames on that socket; emit `{ "type": "dropping", "lang": "es|zh|ko" }` over that output socket so the client can show a warning.
+- **Keepalive/timeouts:** Ping/Pong every 10s; close idle sockets after 30s without application data or pong.
+- **Partial connect:** If a language output socket is missing, server keeps processing but discards that language’s synthesized audio; if input socket drops, session transitions to stopping.
+
+### Runtime Configuration Model (JSON)
+
+- **Location:** `config/runtime.json` (validated at startup).
+- **Schema (shape overview):**
+  - `server`: `{ "host": "0.0.0.0", "port": 4000, "audioWsPort": 4001 }`
+  - `models`: `{ "cacheDir": "models", "asr": "distil-whisper/distil-large-v3", "translation": { "es": "facebook/nllb-200-distilled-600M", "zh": "...", "ko": "..." }, "vad": "silero", "xtts": "xtts-v2" }`
+  - `xtts`: `{ "url": "http://localhost:8000", "timeoutMs": 15000, "maxConcurrent": 3 }`
+  - `workers`: `{ "asr": 1, "translation": { "es": 1, "zh": 1, "ko": 1 }, "tts": { "es": 1, "zh": 1, "ko": 1 } }`
+  - `audio`: `{ "sampleRate": 16000, "bitDepth": 16, "channels": 1, "chunkMs": 20, "backpressure": { "maxBufferedMs": 500 } }`
+  - `websocket`: `{ "pingIntervalMs": 10000, "idleTimeoutMs": 30000 }`
+  - `sessions`: `{ "defaultLanguages": ["es","zh","ko"], "maxDurationSec": 3600 }`
+  - `storage`: `{ "basePath": "./recordings", "yearMonthFolders": true, "keepSpeakerEmbedding": true }`
+  - `features`: `{ "autoDownloadModels": true, "quantization": false }`
+- **Validation:** Define a JSON Schema alongside (e.g., `config/runtime.schema.json`) and validate on boot; fail-fast with a clear error if invalid.
 
 ```graphql
 # ============================================
@@ -1914,7 +1937,7 @@ stateDiagram-v2
 5. **Fire-and-Forget Translation**: Languages don't block each other. If Spanish fails, Chinese and Korean continue.
 6. **XTTS-v2 as Python Microservice**: No mature TypeScript implementation exists; Python backend with HTTP API required for prosody extraction.
 7. **NLLB-200 Distilled (600M)**: Fits 3 instances in memory (~1.8GB total).
-8. **Distil-Whisper Large V3**: Best accuracy/speed tradeoff available in Transformers.js. Parakeet TDT not available.
+8. **Distil-Whisper Large V3**: Best accuracy/speed tradeoff available in Transformers.js.
 9. **GraphQL Subscriptions**: Standard protocol for multi-client real-time streaming over network.
 10. **On-Demand Model Downloads**: Transformers.js auto-download, cached in server's `models/` directory.
 11. **Base64 File Upload**: Simple GraphQL mutation for file uploads instead of multipart.
@@ -1979,12 +2002,28 @@ interface IRecordingStorage {
   finalizeSession(sessionId: string): Promise<RecordingMetadata>;
 
   // Input recording
-  appendInputAudio(sessionId: string, audio: Buffer, utteranceId?: string): Promise<void>;
-  appendInputTranscript(sessionId: string, utterance: TranscriptEntry): Promise<void>;
+  appendInputAudio(
+    sessionId: string,
+    audio: Buffer,
+    utteranceId?: string
+  ): Promise<void>;
+  appendInputTranscript(
+    sessionId: string,
+    utterance: TranscriptEntry
+  ): Promise<void>;
 
   // Output recording (per language)
-  appendOutputAudio(sessionId: string, language: string, audio: Buffer, utteranceId?: string): Promise<void>;
-  appendOutputTranscript(sessionId: string, language: string, utterance: TranscriptEntry): Promise<void>;
+  appendOutputAudio(
+    sessionId: string,
+    language: string,
+    audio: Buffer,
+    utteranceId?: string
+  ): Promise<void>;
+  appendOutputTranscript(
+    sessionId: string,
+    language: string,
+    utterance: TranscriptEntry
+  ): Promise<void>;
 
   // Speaker embedding
   saveSpeakerEmbedding(sessionId: string, embedding: Buffer): Promise<void>;
@@ -1997,7 +2036,11 @@ interface IRecordingStorage {
   // Playback helpers
   getInputAudio(sessionId: string): Promise<ReadableStream>;
   getOutputAudio(sessionId: string, language: string): Promise<ReadableStream>;
-  getUtteranceAudio(sessionId: string, utteranceId: string, language?: string): Promise<Buffer>;
+  getUtteranceAudio(
+    sessionId: string,
+    utteranceId: string,
+    language?: string
+  ): Promise<Buffer>;
 }
 
 interface TranscriptEntry {
@@ -2008,35 +2051,6 @@ interface TranscriptEntry {
   confidence?: number;
   isFinal: boolean;
 }
-```
-
-#### Folder Structure (Local Filesystem)
-
-```
-{basePath}/
-└── 2025-12/                                      # Year-Month grouping
-    └── 2025-12-15-14-30-45-meeting-with-john/    # Session folder
-        ├── session.json                          # Session metadata
-        ├── embedding.bin                         # Speaker embedding
-        ├── input/
-        │   ├── audio.wav                         # Concatenated input
-        │   ├── transcript.txt                    # Plain text
-        │   ├── transcript.timestamps.txt         # With timestamps
-        │   ├── transcript.json                   # Structured JSON
-        │   └── chunks/                           # Per-utterance
-        │       ├── utt-001.wav
-        │       └── utt-002.wav
-        ├── es/
-        │   ├── audio.wav
-        │   ├── transcript.txt
-        │   ├── transcript.timestamps.txt
-        │   ├── transcript.json
-        │   ├── transcript.srt                    # SRT subtitles
-        │   └── chunks/
-        ├── zh/
-        │   └── (same structure)
-        └── ko/
-            └── (same structure)
 ```
 
 #### Recording Flow Integration
@@ -2095,18 +2109,21 @@ sequenceDiagram
 #### Transcript Format Examples
 
 **Plain Text (transcript.txt)**:
+
 ```
 Hello, how are you today?
 I'm doing well, thank you for asking.
 ```
 
 **Timestamped (transcript.timestamps.txt)**:
+
 ```
 [00:00.000 - 00:02.500] Hello, how are you today?
 [00:03.200 - 00:06.100] I'm doing well, thank you for asking.
 ```
 
 **Structured JSON (transcript.json)**:
+
 ```json
 {
   "utterances": [
@@ -2122,6 +2139,7 @@ I'm doing well, thank you for asking.
 ```
 
 **SRT Subtitles (transcript.srt)** - For translated outputs:
+
 ```
 1
 00:00:00,000 --> 00:00:02,500
@@ -2517,30 +2535,6 @@ extend type Mutation {
 
 **Deliverables**: Production-ready code with test coverage
 
-## Memory Budget (16GB Apple Silicon)
-
-**Allocation Strategy**:
-
-| Component                     | Memory  | Notes                          |
-| ----------------------------- | ------- | ------------------------------ |
-| OS + System                   | 3.0 GB  | macOS baseline                 |
-| Node.js Server Process        | 0.5 GB  | Base process + V8 heap         |
-| Distil-Whisper Large V3 (ASR) | 1.5 GB  | Via Transformers.js in Node.js |
-| NLLB-200-distilled-600M × 3   | 1.8 GB  | 600MB each                     |
-| XTTS-v2 (Python backend)      | 2.0 GB  | Separate process               |
-| Silero VAD                    | 0.01 GB | Negligible                     |
-| Working memory + buffers      | 1.0 GB  | Streaming buffers              |
-| **Total Server**              | ~10 GB  | Leaves ~6GB headroom           |
-
-**Note**: React web client runs in user's browser, not counted against server memory.
-
-**Optimizations**:
-
-- Use quantized models if available (int8 reduces NLLB further)
-- Lazy load/unload inactive language models
-- Worker thread isolation prevents memory leaks
-- Implement memory monitoring with alerts
-
 ## Critical Files to Create (Priority Order)
 
 ### Immediate - Phase 1
@@ -2610,18 +2604,18 @@ This plan provides a clear, actionable path to building Voice Bridge with all am
 
 **Confirmed Decisions:**
 
-- ✅ Pure Node.js server with `worker_threads` (not Web Workers)
-- ✅ React web client in browser (not Electron)
-- ✅ WebSocket binary for audio streaming in/out (not WebRTC; audio not sent over GraphQL)
-- ✅ Distil-Whisper Large V3 for ASR (Parakeet TDT not available in Transformers.js)
+- ✅ Pure Node.js server with `worker_threads`
+- ✅ React web client in browser
+- ✅ WebSocket binary for audio streaming in/out (audio not sent over GraphQL)
+- ✅ Distil-Whisper Large V3 for ASR
 - ✅ NLLB-200-distilled-600M for translation (~600MB per language)
-- ✅ On-demand model downloads (not bundled)
+- ✅ On-demand model downloads
 - ✅ Multi-client GraphQL API with subscriptions (text/control only)
 - ✅ All 3 languages (Spanish, Chinese, Korean) from start
 - ✅ Voice intonation matching as PRIMARY goal (XTTS-v2)
 - ✅ Separate audio channels per language (no mixing)
 - ✅ Fire-and-forget translation (languages don't block each other)
-- ✅ Base64 file upload via GraphQL (not multipart)
+- ✅ Base64 file upload via GraphQL
 - ✅ ffmpeg via npm (`@ffmpeg-installer/ffmpeg`)
 - ✅ Cross-platform production, Apple Silicon primary testing
 - ✅ Memory budget: ~10GB server, ~6GB headroom on 16GB machine
