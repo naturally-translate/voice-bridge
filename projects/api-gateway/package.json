@@ -1,32 +1,32 @@
 {
-  "name": "@voice-bridge/client-app",
+  "name": "@voice-bridge/api-gateway",
   "version": "1.0.0",
-  "description": "Web client for voice-bridge",
+  "description": "GraphQL API layer for voice-bridge",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "dev": "vite",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "voice",
-    "client",
-    "react"
+    "api",
+    "graphql"
   ],
   "author": "Tianzhen Ling <tangent@usa.net>",
   "license": "MIT",
   "packageManager": "pnpm@10.7.0",
   "dependencies": {
     "@voice-bridge/core": "workspace:*",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "@apollo/server": "^5.2.0",
+    "graphql": "^16.12.0",
+    "graphql-ws": "^6.0.6",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
-    "@types/react": "^19.2.7",
-    "@types/react-dom": "^19.2.3"
+    "@types/ws": "^8.18.1"
   }
 }
