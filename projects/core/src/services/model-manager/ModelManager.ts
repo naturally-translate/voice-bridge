@@ -1,17 +1,17 @@
-import { createWriteStream } from 'node:fs';
-import { mkdir, readdir, rm, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
+import { createWriteStream } from "node:fs";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 
 import type {
   DownloadProgressCallback,
   IModelManager,
   ModelInfo,
-} from '../../interfaces/IModelManager.js';
-import { getModelInfo, listModels } from './ModelRegistry.js';
+} from "../../interfaces/IModelManager.js";
+import { getModelInfo, listModels } from "./ModelRegistry.js";
 
-const HF_BASE_URL = 'https://huggingface.co';
+const HUGGING_FACE_MODEL_BASE_URL = "https://huggingface.co";
 
 export interface ModelManagerOptions {
   readonly cacheDir: string;
@@ -80,7 +80,9 @@ export class ModelManager implements IModelManager {
     }
 
     if (info.external) {
-      throw new Error(`Model ${modelId} is managed externally and cannot be downloaded via ModelManager`);
+      throw new Error(
+        `Model ${modelId} is managed externally and cannot be downloaded via ModelManager`
+      );
     }
 
     const modelDir = join(this.cacheDir, modelId);
@@ -92,7 +94,7 @@ export class ModelManager implements IModelManager {
       const filePath = join(modelDir, file.path);
       await mkdir(dirname(filePath), { recursive: true });
 
-      const url = `${HF_BASE_URL}/${info.source}/resolve/main/${file.path}`;
+      const url = `${HUGGING_FACE_MODEL_BASE_URL}/${info.source}/resolve/main/${file.path}`;
 
       const downloaded = await this.downloadFile({
         url,
@@ -105,7 +107,9 @@ export class ModelManager implements IModelManager {
               currentFile: file.path,
               ...(info.sizeBytes !== undefined && {
                 totalBytes: info.sizeBytes,
-                percentage: Math.round(((totalDownloaded + bytes) / info.sizeBytes) * 100),
+                percentage: Math.round(
+                  ((totalDownloaded + bytes) / info.sizeBytes) * 100
+                ),
               }),
             });
           }
@@ -160,15 +164,17 @@ export class ModelManager implements IModelManager {
 
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'voice-bridge/1.0.0',
+        "User-Agent": "voice-bridge/1.0.0",
       },
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to download ${url}: ${response.status} ${response.statusText}`);
+      throw new Error(
+        `Failed to download ${url}: ${response.status} ${response.statusText}`
+      );
     }
 
-    const contentLength = response.headers.get('content-length');
+    const contentLength = response.headers.get("content-length");
     const totalBytes = contentLength ? parseInt(contentLength, 10) : undefined;
 
     if (!response.body) {
@@ -194,7 +200,9 @@ export class ModelManager implements IModelManager {
           }
           this.push(Buffer.from(value));
         } catch (error) {
-          this.destroy(error instanceof Error ? error : new Error(String(error)));
+          this.destroy(
+            error instanceof Error ? error : new Error(String(error))
+          );
         }
       },
     });

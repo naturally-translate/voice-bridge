@@ -1,12 +1,8 @@
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 
 import { createModelManager } from '../ModelManager.js';
 import { getModelInfo, isModelRegistered } from '../ModelRegistry.js';
-
-const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const MODELS_DIR = join(__dirname, '../../../../../../models');
+import { MODELS_DIR } from '../../../__tests__/testConfig.js';
 
 describe('ModelRegistry', () => {
   describe('isModelRegistered', () => {
