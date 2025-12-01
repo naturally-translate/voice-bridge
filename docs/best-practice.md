@@ -20,7 +20,7 @@ function sanitizeFileNames(
 
 **Benefits:** Compile-time safety, clear intent, reduced bugs.
 
-#### 3. Avoid Barrel Files (index.ts)
+#### 3. Avoid import Barrel Files when possible (index.ts), use index.ts for export only
 
 Use direct imports to prevent circular dependencies and improve tree shaking:
 
@@ -186,7 +186,7 @@ When implementing new or refactoring existing functionality:
 
 - [ ] **Single Responsibility**: Each function has one clear purpose
 - [ ] **Readonly Types**: Use `readonly` for parameters that shouldn't be mutated
-- [ ] **No Barrel Files**: Import directly from source files
+- [ ] **No barrel import unless it is from an external library**: Import directly from source files
 - [ ] **Options Object Pattern**: Use an options object for functions with 3+ parameters
 - [ ] **Extract Constants**: Move magic values to named configuration objects
 - [ ] **Error Handling**: Follow typed error patterns for domain-specific errors

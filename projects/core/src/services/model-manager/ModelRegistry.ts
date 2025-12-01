@@ -35,6 +35,7 @@ const MODEL_REGISTRY: Readonly<Record<string, ModelInfo>> = {
       { path: 'config.json' },
     ],
     sizeBytes: 1_500_000_000,
+    external: true, // Managed by Transformers.js, uses its own cache directory
   },
   'nllb-200-distilled-600m': {
     id: 'nllb-200-distilled-600m',
