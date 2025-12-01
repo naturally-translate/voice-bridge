@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./projects/core" },
+    { "path": "./projects/api-gateway" },
+    { "path": "./projects/client-app" }
+  ]
+}
