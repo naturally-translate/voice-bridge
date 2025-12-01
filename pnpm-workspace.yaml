@@ -1,2 +1,5 @@
 packages:
   - projects/*
+approveBuilds:
+  - onnxruntime-node
+  - "@apollo/protobufjs"
