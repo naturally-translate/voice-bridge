@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "check:lint": "oxlint -c .oxlintrc.json --ignore-path=.oxlintignore --deny-warnings --type-aware"
+    "check:lint": "oxlint -c .oxlintrc.json --ignore-path=.oxlintignore --deny-warnings --type-aware",
+    "check:type": "pnpm -r check:type"
   },
   "keywords": [],
   "author": "Tianzhen Ling <tangent@usa.net>",

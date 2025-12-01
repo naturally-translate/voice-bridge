@@ -16,18 +16,17 @@ Short, agent-friendly plan. Full historical detail is preserved at `plans/archiv
 - Architecture: Node.js API gateway (`projects/api`, aka api-gateway) using `worker_threads`; React web client (browser); GraphQL control + binary WebSocket audio.
 - Models: Distil-Whisper V3 (ASR), NLLB-200 distilled 600M (translation), XTTS-v2 Python microservice (TTS), Silero VAD.
 
-## Active Phase
+## Phases
 
-- **Phase 1: Foundation & Core Abstractions**
-  - Target: TypeScript configs, dependencies installed, core interfaces, ModelManager with on-demand downloads, first boundary test.
-  - Success: Server package compiles; Silero VAD download works; tests green for ModelManager.
-
-## Upcoming Milestones
-
-- M1: Phase 1 complete (baseline tooling + model download path proven).
-- M2: Phase 2 (ASR + VAD streaming path validated with audio fixtures).
-- M3: Phase 3 (NLLB worker pool translating 3 languages in parallel).
-- M4: Phase 4 (XTTS intonation demo showing prosody preservation).
+1. [Phase 01: Foundation & Core Abstractions](phases/phase-01.md) — Boot toolchain, enforce strict TypeScript, and prove model downloads with ModelManager.
+2. [Phase 02: ASR + VAD](phases/phase-02.md) — Deliver streaming voice activity detection and speech recognition with audio utilities.
+3. [Phase 03: Translation with Worker Threads](phases/phase-03.md) — Provide parallel NLLB translation for three target languages via worker threads.
+4. [Phase 04: XTTS-v2 Intonation Matching](phases/phase-04.md) — Enable prosody-preserving TTS via XTTS-v2 Python microservice and TypeScript client.
+5. [Phase 05: Pipeline Orchestration](phases/phase-05.md) — Orchestrate VAD → ASR → Translation → TTS with fire-and-forget language isolation.
+6. [Phase 06: GraphQL API & WebSocket Server](phases/phase-06.md) — Expose the pipeline over GraphQL and binary WebSockets with multi-client support.
+7. [Phase 07: React Web Client](phases/phase-07.md) — Ship a React/MUI web app for session control, audio streaming, and per-language playback.
+8. [Phase 08: Recording Storage & Playback](phases/phase-08.md) — Persist session artifacts via pluggable storage and expose recording playback.
+9. [Phase 09: Testing & Optimization](phases/phase-09.md) — Harden the system with comprehensive tests, profiling, and resilience improvements.
 
 ## Constraints & Target Platform
 

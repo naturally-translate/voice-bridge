@@ -31,5 +31,5 @@ Deliver streaming VAD and ASR with audio utilities to prep inputs for the pipeli
 
 ## Constraints / Notes
 
-- Keep ASR streaming chunks aligned (e.g., 20–40ms frames) to minimize latency.
+- Streaming ASR guidance: emit partials on ~300–500ms slices with a rolling 1–2s window so latency stays sub-second while Whisper retains enough context; avoid 5s chunks (too laggy) and 20–40ms emissions (too little context).
 - Ensure ffmpeg binaries resolve correctly on Apple Silicon; document any flags needed.
