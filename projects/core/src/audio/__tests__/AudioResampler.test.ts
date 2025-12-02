@@ -293,7 +293,8 @@ describe("AudioResampler", () => {
         });
 
         it("produces same length as single-pass (within 1 sample)", () => {
-          expect(Math.abs(chunkedOutput.length - singlePassOutput.length)).toBeLessThanOrEqual(1);
+          const lengthDifference = Math.abs(chunkedOutput.length - singlePassOutput.length);
+          expect(lengthDifference).toBeLessThanOrEqual(1);
         });
 
         it("produces values matching single-pass output", () => {
