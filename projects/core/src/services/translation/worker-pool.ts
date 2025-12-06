@@ -167,13 +167,13 @@ export class TranslationWorkerPool {
   }
 
 /**
-   * Translates text to a specific target language.
-   * Queues the request and processes with backpressure (one at a time).
-   *
-   * @throws {QueueFullError} When the queue exceeds maxQueueSize
-   * @throws {TranslationTimeoutError} When the request times out
-   * @throws {TranslationCancelledError} When the request is cancelled via signal
-   */
+ * Translates text to a specific target language.
+ * Queues the request and processes with backpressure (one at a time).
+ *
+ * @throws {QueueFullError} When the queue exceeds maxQueueSize
+ * @throws {TranslationTimeoutError} When the request times out
+ * @throws {TranslationCancelledError} When the request is cancelled via signal
+ */
   async translate(
     text: string,
     targetLanguage: TargetLanguage,
