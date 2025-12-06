@@ -23,6 +23,9 @@ API gateway lives at `projects/api` (formerly referenced as `projects/server` in
 - [ ] `projects/api/src/services/translation/NLLBTranslator.ts`
 - [ ] `projects/api/src/workers/translation.worker.ts`
 - [ ] `projects/api/src/workers/worker-pool.ts`
+- [ ] `projects/core/src/services/translation/worker-pool.ts` — add init timeout/cleanup, allow abort of in-flight tasks, refresh streaming timeouts, and ensure worker path resolves without a prebuild
+- [ ] `projects/core/src/services/translation/__tests__/worker-pool.test.ts` — cover queue overflow, restart, and timeout behavior
+- [ ] `plans/phases/phase-03.md` — record translation memory/RSS notes and align model choice with implemented `Xenova/nllb-200-distilled-600M`
 
 ## Priority 2 — Phase 4
 

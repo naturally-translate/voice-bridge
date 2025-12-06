@@ -11,7 +11,8 @@
       "Bash(sl status:*)",
       "Bash(sl log:*)",
       "Bash(sl diff:*)",
-      "Bash(pnpm check:lint:*)"
+      "Bash(pnpm check:lint:*)",
+      "Bash(timeout 90s pnpm test:*)"
     ],
     "deny": [],
     "ask": []
