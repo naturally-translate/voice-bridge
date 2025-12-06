@@ -14,7 +14,6 @@ Provide parallel NLLB translation for three target languages via worker threads.
 - [ ] Implement `NLLBTranslator.ts` for English → {es, zh, ko}; start with single-shot, then streaming.
 - [ ] Create worker entry `translation.worker.ts` hosting a single NLLB instance.
 - [ ] Implement `worker-pool.ts` to manage three workers with task queuing and per-language isolation.
-- [ ] Add memory profiling for loading 3× NLLB instances; target ~1.8GB total.
 - [ ] Add boundary/integration tests for translation and worker pool behavior (queueing, shutdown).
 
 ## Outputs

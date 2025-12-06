@@ -24,7 +24,7 @@ export const PROJECT_ROOT = findProjectRoot();
 /**
  * Models directory for downloaded ML models.
  */
-export const MODELS_DIR = resolve(PROJECT_ROOT, "models");
+export const MODELS_DIR = resolve(PROJECT_ROOT, ".models");
 
 /**
  * Core package source directory.
@@ -35,3 +35,19 @@ export const CORE_SRC_DIR = resolve(PROJECT_ROOT, "projects/core/src");
  * Transformers.js cache directory for ASR models.
  */
 export const TRANSFORMERS_CACHE_DIR = resolve(MODELS_DIR, "transformers-cache");
+
+/**
+ * Whether to run integration tests that require real model downloads.
+ * Set RUN_INTEGRATION_TESTS=true to enable.
+ * These tests are slow (5-10 min) and require network access.
+ */
+export const RUN_INTEGRATION_TESTS =
+  process.env.RUN_INTEGRATION_TESTS === "true";
+
+/**
+ * Helper to conditionally describe integration test suites.
+ * Skips the suite unless RUN_INTEGRATION_TESTS is enabled.
+ */
+export const describeIntegration = RUN_INTEGRATION_TESTS
+  ? describe
+  : describe.skip;
