@@ -295,7 +295,7 @@ describe("TranslationWorkerPool (unit tests with mock)", () => {
 
   describe("queue bounds", () => {
     it("throws QueueFullError when queue exceeds maxQueueSize", async () => {
-      // Create a pool with very small queue size (0 means only the current task counts)
+      // Create a pool with very small queue size (1 means only the current task counts)
       const smallQueuePool = new MockWorkerPool({ maxQueueSize: 1 });
       await smallQueuePool.initialize();
 
