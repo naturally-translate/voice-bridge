@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
-import { Worker } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -345,8 +344,6 @@ describe("TranslationWorkerPool (unit tests with mock)", () => {
     });
 
     it("cancels pending request when signal is aborted", async () => {
-      const controller = new AbortController();
-
       // Start a translation, then abort before it completes
       // Since our mock is fast, we need to test queue cancellation
       const smallQueuePool = new MockWorkerPool();
