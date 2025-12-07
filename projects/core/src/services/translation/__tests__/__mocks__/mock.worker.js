@@ -139,6 +139,6 @@ async function handleMessage(message) {
 
 if (parentPort) {
   parentPort.on("message", (message) => {
-    handleMessage(message);
+    void handleMessage(message);
   });
 }

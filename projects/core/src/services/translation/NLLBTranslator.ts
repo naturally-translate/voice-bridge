@@ -170,6 +170,8 @@ export class NLLBTranslator implements ITranslator {
    * Streaming translation that yields partial results as sentences are translated.
    * Splits input text into sentences and translates them progressively.
    * Yields partial results (isPartial=true) followed by final result (isPartial=false).
+   *
+   * @yields {TranslationResult} Partial translation results followed by final result
    */
   async *translateStream(
     text: string,
