@@ -30,7 +30,7 @@ Short, agent-friendly plan. Full historical detail is preserved at `plans/archiv
 
 ## Constraints & Target Platform
 
-- Runtimes via ASDF: Node 22.12.x (LTS), Python 3.11.9, Poetry 1.8.3, pnpm 10.12.x.
+- Runtimes via ASDF: Node 22.12.x (LTS), Python 3.11.9, pnpm 10.12.x. UV for Python package management.
 - Primary dev target: Apple Silicon 16GB RAM; production must remain cross-platform (macOS/Windows/Linux).
 - Keep audio transport on binary WebSockets (no WebRTC); control/text on GraphQL.
 

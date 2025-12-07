@@ -6,17 +6,17 @@ Enable prosody-preserving TTS via XTTS-v2 with a Python microservice and TypeScr
 
 ## Inputs
 
-- Python runtime (Poetry) for `xtts-server/`.
+- Python runtime (UV) for `xtts-server/`.
 - HTTP contract for `/extract-embedding`, `/synthesize`, `/health`.
 - ASR output and VAD-filtered audio for embedding extraction.
 
 ## Tasks
 
-- [ ] Scaffold `xtts-server/` with FastAPI endpoints for embedding extraction and synthesis; include Poetry dependencies (`TTS`, `fastapi`, `uvicorn`).
-- [ ] Implement `XTTSClient.ts` for HTTP calls and `ProsodyExtractor.ts` for managing speaker embeddings (3–6 seconds voiced audio).
-- [ ] Create `tts.worker.ts` for parallel synthesis (3 workers, one per language).
-- [ ] Wire the accumulation strategy: VAD-filtered audio until embedding is locked, then reuse for all TTS calls.
-- [ ] Add demo script/test that synthesizes short outputs in all 3 languages using a captured embedding.
+- [x] Scaffold `xtts-server/` with FastAPI endpoints for embedding extraction and synthesis; include UV dependencies (`TTS`, `fastapi`, `uvicorn`).
+- [x] Implement `XTTSClient.ts` for HTTP calls and `ProsodyExtractor.ts` for managing speaker embeddings (3–6 seconds voiced audio).
+- [x] Create `tts.worker.ts` for parallel synthesis (3 workers, one per language).
+- [x] Wire the accumulation strategy: VAD-filtered audio until embedding is locked, then reuse for all TTS calls.
+- [x] Add demo script/test that synthesizes short outputs in all 3 languages using a captured embedding.
 
 ## Outputs
 

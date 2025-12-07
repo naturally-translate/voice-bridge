@@ -6,12 +6,12 @@ Boot the toolchain, enforce strict TypeScript defaults, and prove the model down
 
 ## Inputs
 
-- Runtimes via ASDF: Node 22.12.x (LTS), Python 3.11.9, Poetry 1.8.3, pnpm 10.12.x.
+- Runtimes via ASDF: Node 22.12.x (LTS), Python 3.11.9, pnpm 10.12.x. UV for Python package management.
 - Monorepo packages: API gateway (`projects/api`, aka api-gateway), web client (`projects/client-app`), root configs.
 
 ## Tasks
 
-- [ ] Create `.tool-versions` with the runtime versions above; install ASDF plugins (nodejs, python, poetry, pnpm) and run `asdf install`.
+- [ ] Create `.tool-versions` with the runtime versions above; install ASDF plugins (nodejs, python, pnpm) and run `asdf install`. Install UV separately via `curl -LsSf https://astral.sh/uv/install.sh | sh` or `brew install uv`.
 - [ ] Add TypeScript configs (`tsconfig.base.json`, `projects/api/tsconfig.json`) with strict mode enabled.
 - [ ] Update package manifests with core dependencies: `@huggingface/transformers`, `@ffmpeg-installer/ffmpeg`, `fluent-ffmpeg`, `ws`, `@apollo/server`, `graphql-ws`, `comlink`.
 - [ ] Run `pnpm install` at repo root to hydrate all workspaces.
