@@ -1,0 +1,33 @@
+[project]
+name = "xtts-server"
+version = "0.1.0"
+description = "XTTS-v2 TTS microservice for Voice Bridge"
+authors = [
+    {name = "Tianzhen Ling", email = "tangent@usa.net"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "TTS>=0.22.0",
+    "numpy>=1.26.0",
+    "pydantic>=2.10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+    "requests>=2.32.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

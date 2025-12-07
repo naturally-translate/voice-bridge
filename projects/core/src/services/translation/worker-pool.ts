@@ -216,6 +216,7 @@ export class TranslationWorkerPool {
    * Text is split into sentences; each sentence translates as a unit.
    * Partial results accumulate progressively as sentences complete.
    *
+   * @yields {TranslationResult} Partial translation results followed by final result
    * @throws {QueueFullError} When the queue exceeds maxQueueSize
    * @throws {TranslationTimeoutError} When the request times out
    * @throws {TranslationCancelledError} When the request is cancelled via signal
