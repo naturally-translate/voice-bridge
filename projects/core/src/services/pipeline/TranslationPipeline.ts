@@ -29,7 +29,11 @@ import {
   createPipelineContext,
   type PipelineContextOptions,
 } from "./PipelineContext.js";
-import { type PipelineMetrics } from "./PipelineMetrics.js";
+import {
+  type PipelineMetrics,
+  type MetricsSnapshot,
+  type ThresholdViolation,
+} from "./PipelineMetrics.js";
 import {
   type PipelineEvent,
   type TargetLanguage,
@@ -41,22 +45,47 @@ import {
   type TranslationPipelineEvent,
   type SynthesisPipelineEvent,
   type ErrorPipelineEvent,
+  type MetricsPipelineEvent,
   type ProsodyPipelineEvent,
   DEFAULT_PIPELINE_CONFIG,
+  TARGET_LANGUAGES,
   generateId,
   getTimestamp,
-  isError,
 } from "./PipelineTypes.js";
 import {
   PipelineNotInitializedError,
   PipelineShutdownError,
   StageFailedError,
+  InvalidInputError,
 } from "../../errors/PipelineError.js";
+import { stereoToMono } from "../../audio/index.js";
+import { AsyncQueue } from "./AsyncQueue.js";
+import { ChunkedAudioBuffer } from "./ChunkedAudioBuffer.js";
 
 /**
  * Pipeline state enumeration.
  */
 type PipelineState = "created" | "initializing" | "ready" | "processing" | "shutdown";
+
+/**
+ * Listener for metrics events emitted by the pipeline.
+ */
+export type MetricsEventListener = (event: MetricsPipelineEvent) => void;
+
+/**
+ * Threshold alert event emitted when metrics exceed configured limits.
+ */
+export interface ThresholdAlertEvent {
+  readonly type: "threshold_alert";
+  readonly timestamp: number;
+  readonly violations: readonly ThresholdViolation[];
+  readonly snapshot: MetricsSnapshot;
+}
+
+/**
+ * Listener for threshold alert events.
+ */
+export type ThresholdAlertListener = (event: ThresholdAlertEvent) => void;
 
 /**
  * Dependencies for the pipeline.
@@ -68,6 +97,7 @@ interface PipelineDependencies {
   readonly ttsPool: TTSWorkerPool;
   readonly xttsClient: XTTSClient;
 }
+
 
 /**
  * Options for initializing the pipeline with external dependencies.
@@ -115,6 +145,32 @@ export class TranslationPipeline {
   private metricsIntervalId: ReturnType<typeof setInterval> | null = null;
   private processingAbortController: AbortController | null = null;
 
+  /**
+   * Cumulative audio buffer for extracting VAD segments.
+   * VAD segments use absolute timestamps from stream start,
+   * so we must accumulate all audio to slice correctly.
+   * Uses chunked storage for O(1) append and supports eviction.
+   */
+  private audioBuffer = new ChunkedAudioBuffer({ sampleRate: 16000 });
+
+  /** Listeners for periodic metrics events */
+  private readonly metricsListeners: Set<MetricsEventListener> = new Set();
+
+  /** Listeners for threshold alert events */
+  private readonly thresholdAlertListeners: Set<ThresholdAlertListener> = new Set();
+
+  /** Throughput tracking: segments processed in current interval */
+  private segmentsProcessedInInterval = 0;
+
+  /** Throughput tracking: translations completed in current interval */
+  private translationsCompletedInInterval = 0;
+
+  /** Throughput tracking: syntheses completed in current interval */
+  private synthesesCompletedInInterval = 0;
+
+  /** Track previous threshold violation state for edge detection */
+  private previouslyViolatingThresholds = false;
+
   constructor(options?: Readonly<TranslationPipelineOptions>) {
     this.options = options ?? {};
     this.config = {
@@ -152,6 +208,36 @@ export class TranslationPipeline {
    */
   getMetrics(): PipelineMetrics {
     return this.getContext().getMetrics();
+  }
+
+  /**
+   * Register a listener for periodic metrics events.
+   * Metrics are emitted at the configured interval (default: 5000ms).
+   */
+  addMetricsListener(listener: MetricsEventListener): void {
+    this.metricsListeners.add(listener);
+  }
+
+  /**
+   * Remove a metrics event listener.
+   */
+  removeMetricsListener(listener: MetricsEventListener): void {
+    this.metricsListeners.delete(listener);
+  }
+
+  /**
+   * Register a listener for threshold alert events.
+   * Alerts are emitted when metrics exceed configured thresholds.
+   */
+  addThresholdAlertListener(listener: ThresholdAlertListener): void {
+    this.thresholdAlertListeners.add(listener);
+  }
+
+  /**
+   * Remove a threshold alert listener.
+   */
+  removeThresholdAlertListener(listener: ThresholdAlertListener): void {
+    this.thresholdAlertListeners.delete(listener);
   }
 
   /**
@@ -252,6 +338,7 @@ export class TranslationPipeline {
     metadata?: Readonly<PipelineAudioMetadata>
   ): AsyncIterableIterator<PipelineEvent> {
     this.ensureReady();
+    this.validateAudioInput(audio);
 
     const context = this.context!;
     const deps = this.deps!;
@@ -263,6 +350,13 @@ export class TranslationPipeline {
 
     // Create abort controller for this processing session
     this.processingAbortController = new AbortController();
+
+    // Accumulate audio for segment extraction
+    // VAD segments have absolute timestamps from stream start
+    // Audio is converted to mono here to match VAD's internal preprocessing
+    const chunkSampleRate = metadata?.sampleRate ?? this.config.sampleRate;
+    const chunkChannels = metadata?.channels ?? 1;
+    this.accumulateAudio(audio, chunkSampleRate, chunkChannels);
 
     try {
       // Stage 1: VAD
@@ -276,11 +370,7 @@ export class TranslationPipeline {
 
         // Add voiced audio for prosody extraction
         if (!vadEvent.isPartial) {
-          const segmentAudio = this.extractSegmentAudio(
-            audio,
-            vadEvent.segment,
-            metadata?.sampleRate ?? this.config.sampleRate
-          );
+          const segmentAudio = this.extractSegmentAudio(vadEvent.segment);
           context.addVoicedAudio(segmentAudio);
 
           // Emit prosody update if state changed
@@ -291,7 +381,7 @@ export class TranslationPipeline {
         }
 
         // Emit VAD event
-        const vadPipelineEvent = this.createVADEvent(vadEvent, audio, metadata);
+        const vadPipelineEvent = this.createVADEvent(vadEvent);
         yield vadPipelineEvent;
 
         // Only process final segments
@@ -302,11 +392,7 @@ export class TranslationPipeline {
 
         // Store segment metadata
         const segmentId = generateId("seg");
-        const segmentAudio = this.extractSegmentAudio(
-          audio,
-          vadEvent.segment,
-          metadata?.sampleRate ?? this.config.sampleRate
-        );
+        const segmentAudio = this.extractSegmentAudio(vadEvent.segment);
         context.storeSegment({
           id: segmentId,
           startTime: getTimestamp(),
@@ -314,8 +400,22 @@ export class TranslationPipeline {
           audioSamples: segmentAudio,
         });
 
-        // Stage 2: ASR
-        yield* this.processASR(segmentId, segmentAudio, deps, metrics, context);
+        // Track segment for throughput metrics
+        this.incrementSegmentCount();
+
+        // Stage 2: ASR - pass audio metadata for proper resampling
+        yield* this.processASR(
+          segmentId,
+          segmentAudio,
+          deps,
+          metrics,
+          context,
+          { sampleRate: this.audioBuffer.sampleRate, channels: 1 }
+        );
+
+        // Evict processed audio to bound memory usage
+        // Audio before segment end is no longer needed
+        this.evictProcessedAudio(vadEvent.segment);
       }
 
       // Finalize operation
@@ -427,6 +527,9 @@ export class TranslationPipeline {
     this.deps!.vad.reset();
     this.context!.reset();
     this.context!.start();
+
+    // Reset audio buffer for new session
+    this.audioBuffer.reset();
   }
 
   /**
@@ -439,15 +542,16 @@ export class TranslationPipeline {
     audio: Float32Array,
     deps: PipelineDependencies,
     metrics: PipelineMetrics,
-    context: PipelineContext
+    context: PipelineContext,
+    audioMetadata: { sampleRate: number; channels: number }
   ): AsyncIterableIterator<PipelineEvent> {
     metrics.startASR();
 
     try {
-      // Transcribe audio
+      // Transcribe audio with metadata for proper resampling
       let finalTranscription: ASRResult | null = null;
 
-      for await (const asrResult of deps.asr.transcribe(audio)) {
+      for await (const asrResult of deps.asr.transcribe(audio, { audioMetadata })) {
         const transcriptionEvent = this.createTranscriptionEvent(
           segmentId,
           asrResult
@@ -494,8 +598,10 @@ export class TranslationPipeline {
   /**
    * Process translation and TTS for all active languages.
    * Uses fire-and-forget pattern - one language failure doesn't block others.
+   * Both translation and TTS run in parallel across all languages.
+   * Events are streamed as each language completes (not batched).
    *
-   * @yields Translation and synthesis events for each language
+   * @yields Translation and synthesis events for each language as they complete
    */
   private async *processTranslationAndTTS(
     transcriptionId: string,
@@ -506,103 +612,169 @@ export class TranslationPipeline {
   ): AsyncIterableIterator<PipelineEvent> {
     const activeLanguages = context.getActiveLanguages();
 
-    // Fire off all translations in parallel
-    const translationPromises = activeLanguages.map((lang) =>
-      this.translateWithMetrics(text, lang, deps, metrics)
-    );
+    // Use async queue for true streaming - events yield as each language completes
+    const eventQueue = new AsyncQueue<PipelineEvent>();
+    let pendingLanguages = activeLanguages.length;
 
-    // Use allSettled for fire-and-forget behavior
-    const translationResults = await Promise.allSettled(translationPromises);
+    // Handle edge case: no active languages
+    if (pendingLanguages === 0) {
+      return;
+    }
 
-    // Process results and emit events
-    for (let i = 0; i < activeLanguages.length; i++) {
-      const lang = activeLanguages[i]!;
-      const result = translationResults[i]!;
+    // Process each language in parallel, pushing events as they complete
+    for (const lang of activeLanguages) {
+      this.processLanguageTranslationAndTTS(
+        lang,
+        transcriptionId,
+        text,
+        deps,
+        metrics,
+        context
+      )
+        .then((events) => {
+          // Push all events for this language immediately
+          eventQueue.pushAll(events);
+        })
+        .catch((error) => {
+          // Unexpected error - emit error event
+          eventQueue.push(
+            this.createErrorEvent(
+              "translation",
+              error instanceof Error ? error : new Error(String(error)),
+              lang,
+              true
+            )
+          );
+        })
+        .finally(() => {
+          // Close queue when all languages complete
+          pendingLanguages--;
+          if (pendingLanguages === 0) {
+            eventQueue.close();
+          }
+        });
+    }
 
-      if (result.status === "fulfilled" && !isError(result.value)) {
-        // Translation succeeded
-        const translationEvent = this.createTranslationEvent(
-          transcriptionId,
+    // Yield events as they arrive from any language
+    yield* eventQueue;
+  }
+
+  /**
+   * Process translation and TTS for a single language.
+   * Returns all events for this language (translation + TTS or errors).
+   */
+  private async processLanguageTranslationAndTTS(
+    lang: TargetLanguage,
+    transcriptionId: string,
+    text: string,
+    deps: PipelineDependencies,
+    metrics: PipelineMetrics,
+    context: PipelineContext
+  ): Promise<PipelineEvent[]> {
+    const events: PipelineEvent[] = [];
+
+    try {
+      // Translation
+      const translationResult = await this.translateWithMetrics(
+        text,
+        lang,
+        deps,
+        metrics
+      );
+
+      // Generate translation ID for event correlation
+      const translationId = generateId("translation");
+
+      // Emit translation event with ID
+      const translationEvent = this.createTranslationEvent(
+        translationId,
+        transcriptionId,
+        lang,
+        translationResult
+      );
+      events.push(translationEvent);
+
+      // Track translation for throughput metrics
+      this.incrementTranslationCount();
+
+      // TTS (only if translation succeeded) - use same translationId for correlation
+      try {
+        const ttsEvents = await this.processTTSAsync(
+          translationId,
           lang,
-          result.value
-        );
-        yield translationEvent;
-
-        // Now do TTS for this language
-        yield* this.processTTS(
-          generateId("trans-result"),
-          lang,
-          result.value.text,
+          translationResult.text,
           deps,
           metrics,
           context
         );
-      } else {
-        // Translation failed
-        const error =
-          result.status === "rejected"
-            ? result.reason
-            : result.value;
-        const errorEvent = this.createErrorEvent(
+        events.push(...ttsEvents);
+      } catch (ttsError) {
+        // TTS failed but translation succeeded - emit TTS error
+        events.push(
+          this.createErrorEvent(
+            "synthesis",
+            ttsError instanceof Error ? ttsError : new Error(String(ttsError)),
+            lang,
+            true
+          )
+        );
+      }
+    } catch (translationError) {
+      // Translation failed - emit error and skip TTS
+      events.push(
+        this.createErrorEvent(
           "translation",
-          error instanceof Error ? error : new Error(String(error)),
+          translationError instanceof Error
+            ? translationError
+            : new Error(String(translationError)),
           lang,
           true
-        );
-        yield errorEvent;
-      }
+        )
+      );
     }
+
+    return events;
   }
 
   /**
-   * Process TTS for a single language.
-   *
-   * @yields Synthesis event or error event for the language
+   * Process TTS for a single language (async version for parallel processing).
+   * Returns events instead of yielding for use in Promise.allSettled.
    */
-  private async *processTTS(
+  private async processTTSAsync(
     translationId: string,
     language: TargetLanguage,
     text: string,
     deps: PipelineDependencies,
     metrics: PipelineMetrics,
     context: PipelineContext
-  ): AsyncIterableIterator<PipelineEvent> {
+  ): Promise<PipelineEvent[]> {
+    const events: PipelineEvent[] = [];
     metrics.startSynthesis(language);
 
     try {
       // Build TTS options with speaker embedding if available
-      const ttsOptions: TTSRequestOptions = {};
       const embedding = context.speakerEmbedding;
-      if (embedding && this.config.enableProsodyMatching) {
-        (ttsOptions as { embedding: typeof embedding }).embedding = embedding;
-        (ttsOptions as { fallbackToNeutral: boolean }).fallbackToNeutral = true;
-      }
+      const ttsOptions: TTSRequestOptions =
+        embedding && this.config.enableProsodyMatching
+          ? { embedding, fallbackToNeutral: true }
+          : {};
 
-      const ttsResult = await deps.ttsPool.synthesize(
-        text,
-        language,
-        ttsOptions
-      );
+      const ttsResult = await deps.ttsPool.synthesize(text, language, ttsOptions);
 
       metrics.endSynthesis(language, true);
 
-      const synthesisEvent = this.createSynthesisEvent(
-        translationId,
-        language,
-        ttsResult
-      );
-      yield synthesisEvent;
+      events.push(this.createSynthesisEvent(translationId, language, ttsResult));
+
+      // Track synthesis for throughput metrics
+      this.incrementSynthesisCount();
     } catch (error) {
       metrics.endSynthesis(language, false);
-
-      yield this.createErrorEvent(
-        "synthesis",
-        error instanceof Error ? error : new Error(String(error)),
-        language,
-        true
-      );
+      throw error; // Re-throw to be caught by caller
     }
+
+    return events;
   }
+
 
   /**
    * Translate text with metrics tracking.
@@ -626,47 +798,62 @@ export class TranslationPipeline {
   }
 
   /**
-   * Extract audio samples for a VAD segment.
+   * Accumulate audio into the buffer for segment extraction.
+   * VAD segments have absolute timestamps, so we need the full audio stream.
+   * Audio is converted to mono to match VAD's internal preprocessing,
+   * ensuring segment timestamps align correctly with buffer indices.
    */
-  private extractSegmentAudio(
-    audio: Float32Array,
-    segment: VADSegment,
-    sampleRate: number
-  ): Float32Array {
-    const startSample = Math.floor(segment.start * sampleRate);
-    const endSample = Math.min(
-      Math.ceil(segment.end * sampleRate),
-      audio.length
-    );
-
-    if (startSample >= audio.length || endSample <= startSample) {
-      return new Float32Array(0);
+  private accumulateAudio(audio: Float32Array, sampleRate: number, channels: number): void {
+    // Update sample rate if this is the first chunk (buffer must be empty to change rate)
+    if (this.audioBuffer.isEmpty) {
+      this.audioBuffer.sampleRate = sampleRate;
     }
 
-    return audio.slice(startSample, endSample);
+    // Convert to mono if multi-channel to match VAD's preprocessing
+    // This ensures segment timestamps align with buffer sample indices
+    const monoAudio = channels > 1 ? stereoToMono(audio, channels) : audio;
+
+    // Append to chunked buffer - O(1) operation
+    this.audioBuffer.append(monoAudio);
+  }
+
+  /**
+   * Extract audio samples for a VAD segment from the accumulated buffer.
+   * Segments have absolute timestamps from stream start.
+   */
+  private extractSegmentAudio(segment: VADSegment): Float32Array {
+    return this.audioBuffer.extractRange(segment.start, segment.end);
+  }
+
+  /**
+   * Evict audio samples that are no longer needed.
+   * Called after a segment has been fully processed.
+   */
+  private evictProcessedAudio(segment: VADSegment): void {
+    // Evict audio before the segment end, as it's no longer needed
+    // Keep a small buffer for any edge cases with partial segments
+    this.audioBuffer.evictBefore(segment.end);
   }
 
   /**
    * Create a VAD pipeline event.
    */
-  private createVADEvent(
-    vadEvent: VADEvent,
-    audio: Float32Array,
-    metadata?: Readonly<PipelineAudioMetadata>
-  ): VADPipelineEvent {
-    const segmentAudio = this.extractSegmentAudio(
-      audio,
-      vadEvent.segment,
-      metadata?.sampleRate ?? this.config.sampleRate
-    );
+  private createVADEvent(vadEvent: VADEvent): VADPipelineEvent {
+    const segmentAudio = this.extractSegmentAudio(vadEvent.segment);
 
-    return {
+    const event: VADPipelineEvent = {
       type: "vad",
       timestamp: getTimestamp(),
       segment: vadEvent.segment,
       isPartial: vadEvent.isPartial,
-      audio: segmentAudio.length > 0 ? segmentAudio : undefined,
     };
+
+    // Only include audio if we have samples (exactOptionalPropertyTypes compliance)
+    if (segmentAudio.length > 0) {
+      return { ...event, audio: segmentAudio };
+    }
+
+    return event;
   }
 
   /**
@@ -689,6 +876,7 @@ export class TranslationPipeline {
    * Create a translation pipeline event.
    */
   private createTranslationEvent(
+    id: string,
     transcriptionId: string,
     language: TargetLanguage,
     result: TranslationResult
@@ -696,6 +884,7 @@ export class TranslationPipeline {
     return {
       type: "translation",
       timestamp: getTimestamp(),
+      id,
       targetLanguage: language,
       result,
       isPartial: result.isPartial,
@@ -729,19 +918,18 @@ export class TranslationPipeline {
     language: TargetLanguage | undefined,
     recoverable: boolean
   ): ErrorPipelineEvent {
-    const event: ErrorPipelineEvent = {
-      type: "error",
+    const baseEvent = {
+      type: "error" as const,
       timestamp: getTimestamp(),
       stage,
       error,
       recoverable,
     };
 
-    if (language !== undefined) {
-      (event as { targetLanguage: TargetLanguage }).targetLanguage = language;
-    }
-
-    return event;
+    // Return with or without targetLanguage based on whether language is provided
+    return language !== undefined
+      ? { ...baseEvent, targetLanguage: language }
+      : baseEvent;
   }
 
   /**
@@ -756,11 +944,7 @@ export class TranslationPipeline {
     return {
       type: "prosody",
       timestamp: getTimestamp(),
-      state: context.isProsodyReady
-        ? "locked"
-        : context.prosodyProgress > 0
-        ? "accumulating"
-        : "accumulating",
+      state: context.isProsodyReady ? "locked" : "accumulating",
       progress: context.prosodyProgress,
       isReady: context.isProsodyReady,
     };
@@ -768,6 +952,7 @@ export class TranslationPipeline {
 
   /**
    * Start the metrics emission interval.
+   * Emits periodic metrics events and checks for threshold violations.
    */
   private startMetricsInterval(): void {
     if (this.config.metricsIntervalMs <= 0) {
@@ -775,9 +960,157 @@ export class TranslationPipeline {
     }
 
     this.metricsIntervalId = setInterval(() => {
-      // Metrics are emitted through the context
-      // This interval just ensures regular updates
+      this.emitPeriodicMetrics();
     }, this.config.metricsIntervalMs);
+  }
+
+  /**
+   * Emit periodic metrics to all registered listeners.
+   * Also checks for threshold violations and emits alerts.
+   */
+  private emitPeriodicMetrics(): void {
+    if (!this.context) {
+      return;
+    }
+
+    const metrics = this.context.getMetrics();
+    const snapshot = metrics.getSnapshot();
+
+    // Create and emit metrics event
+    const metricsEvent = this.createPeriodicMetricsEvent(snapshot);
+    this.notifyMetricsListeners(metricsEvent);
+
+    // Check for threshold violations and emit alerts
+    if (snapshot.thresholdViolation) {
+      this.handleThresholdViolations(snapshot);
+    } else if (this.previouslyViolatingThresholds) {
+      // Thresholds recovered - could emit recovery event if needed
+      this.previouslyViolatingThresholds = false;
+    }
+
+    // Reset throughput counters for next interval
+    this.resetIntervalCounters();
+  }
+
+  /**
+   * Create a metrics event with throughput information.
+   */
+  private createPeriodicMetricsEvent(snapshot: MetricsSnapshot): MetricsPipelineEvent {
+    // Calculate throughput rates (per second)
+    const intervalSeconds = this.config.metricsIntervalMs / 1000;
+
+    return {
+      type: "metrics",
+      timestamp: snapshot.timestamp,
+      latencyMs: snapshot.latency,
+      memoryMB: snapshot.memoryMB,
+      languageStatus: snapshot.languageStatus,
+      thresholdViolation: snapshot.thresholdViolation,
+      throughput: {
+        segmentsPerSecond: this.segmentsProcessedInInterval / intervalSeconds,
+        translationsPerSecond: this.translationsCompletedInInterval / intervalSeconds,
+        synthesesPerSecond: this.synthesesCompletedInInterval / intervalSeconds,
+      },
+      errorRates: this.calculateErrorRates(snapshot),
+      audioBufferSizeBytes: this.audioBuffer.byteLength,
+    };
+  }
+
+  /**
+   * Calculate error rates per language from the snapshot.
+   */
+  private calculateErrorRates(snapshot: MetricsSnapshot): ReadonlyMap<TargetLanguage, number> {
+    const errorRates = new Map<TargetLanguage, number>();
+
+    for (const lang of TARGET_LANGUAGES) {
+      const status = snapshot.languageStatus.get(lang);
+      if (status) {
+        const total = status.successCount + status.errorCount;
+        const rate = total > 0 ? status.errorCount / total : 0;
+        errorRates.set(lang, rate);
+      }
+    }
+
+    return errorRates;
+  }
+
+  /**
+   * Handle threshold violations by emitting alert events.
+   */
+  private handleThresholdViolations(snapshot: MetricsSnapshot): void {
+    // Only emit alert on transition to violation state (edge detection)
+    // or if we have listeners and are currently violating
+    if (this.thresholdAlertListeners.size === 0) {
+      this.previouslyViolatingThresholds = true;
+      return;
+    }
+
+    const alertEvent: ThresholdAlertEvent = {
+      type: "threshold_alert",
+      timestamp: getTimestamp(),
+      violations: snapshot.violations,
+      snapshot,
+    };
+
+    this.notifyThresholdAlertListeners(alertEvent);
+    this.previouslyViolatingThresholds = true;
+  }
+
+  /**
+   * Notify all metrics listeners of an event.
+   */
+  private notifyMetricsListeners(event: MetricsPipelineEvent): void {
+    for (const listener of this.metricsListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Silently ignore listener errors to prevent one bad listener
+        // from breaking metrics emission for others
+      }
+    }
+  }
+
+  /**
+   * Notify all threshold alert listeners of an event.
+   */
+  private notifyThresholdAlertListeners(event: ThresholdAlertEvent): void {
+    for (const listener of this.thresholdAlertListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Silently ignore listener errors
+      }
+    }
+  }
+
+  /**
+   * Reset interval throughput counters.
+   */
+  private resetIntervalCounters(): void {
+    this.segmentsProcessedInInterval = 0;
+    this.translationsCompletedInInterval = 0;
+    this.synthesesCompletedInInterval = 0;
+  }
+
+  /**
+   * Increment segment processed counter for throughput tracking.
+   */
+  private incrementSegmentCount(): void {
+    this.segmentsProcessedInInterval++;
+  }
+
+  /**
+   * Increment translation completed counter for throughput tracking.
+   */
+  private incrementTranslationCount(): void {
+    this.translationsCompletedInInterval++;
+  }
+
+  /**
+   * Increment synthesis completed counter for throughput tracking.
+   */
+  private incrementSynthesisCount(): void {
+    this.synthesesCompletedInInterval++;
   }
 
   /**
@@ -799,6 +1132,53 @@ export class TranslationPipeline {
     }
     if (this.state !== "ready" && this.state !== "processing") {
       throw new PipelineNotInitializedError();
+    }
+  }
+
+  /**
+   * Maximum allowed audio chunk size in samples (10 minutes at 48kHz).
+   * Prevents memory exhaustion from extremely large inputs.
+   */
+  private static readonly MAX_AUDIO_SAMPLES = 48000 * 60 * 10;
+
+  /**
+   * Validate audio input data.
+   * Checks for empty arrays, NaN/Infinity values, and excessively large inputs.
+   *
+   * @throws InvalidInputError if validation fails
+   */
+  private validateAudioInput(audio: Float32Array): void {
+    // Check for empty input
+    if (audio.length === 0) {
+      throw new InvalidInputError("audio", "Audio array is empty");
+    }
+
+    // Check for excessively large input (prevent memory exhaustion)
+    if (audio.length > TranslationPipeline.MAX_AUDIO_SAMPLES) {
+      throw new InvalidInputError(
+        "audio",
+        `Audio array too large: ${audio.length} samples exceeds maximum of ${TranslationPipeline.MAX_AUDIO_SAMPLES}`
+      );
+    }
+
+    // Sample a subset of values to check for NaN/Infinity (checking every value would be expensive)
+    // Check first, last, and evenly distributed samples
+    const sampleIndices = [
+      0,
+      Math.floor(audio.length / 4),
+      Math.floor(audio.length / 2),
+      Math.floor((3 * audio.length) / 4),
+      audio.length - 1,
+    ];
+
+    for (const idx of sampleIndices) {
+      const value = audio[idx];
+      if (!Number.isFinite(value)) {
+        throw new InvalidInputError(
+          "audio",
+          `Audio contains invalid value at index ${idx}: ${value}`
+        );
+      }
     }
   }
 }

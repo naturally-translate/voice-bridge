@@ -71,10 +71,38 @@ Before presenting the final output:
 
 If the diff is empty or cannot be obtained, inform the user and ask for clarification on how to access the changes.
 
-## Create pull request
+## Creating PRs with Sapling
 
-Once PR description has been created successfully, proceed with the following
+When using Sapling (`sl`), you can update the commit message and create a PR using these commands:
 
-- Ask user to review the pull request title and description
-- Ask user whether user would like to create pull request with the title and description what you have generated. If there is already an existing pull request, ask if user would like to amend the current pull request title and description
-- If user wishes so, proceed with Sapling `sl` (if `.sl` folder is present) or Github `gh` (if `.git` folder is present)
+1. **Update the commit message** with the PR title and description using `sl metaedit`:
+
+   ```bash
+   sl metaedit -m "$(cat <<'EOF'
+   feat: your PR title here
+
+   ## Summary
+
+   - First summary point
+   - Second summary point
+
+   ## Key Changes
+
+   - Key change 1
+   - Key change 2
+   EOF
+   )"
+   ```
+
+2. **Submit the PR** to GitHub:
+
+   ```bash
+   sl pr submit
+   ```
+
+   This pushes the commit and creates a GitHub PR using the commit message as the title and description.
+
+   Options:
+
+   - `sl pr submit --stack` - include draft ancestors
+   - `sl pr submit --draft` - mark as draft PR
