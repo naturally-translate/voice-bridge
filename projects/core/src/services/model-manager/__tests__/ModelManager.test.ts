@@ -119,8 +119,8 @@ describe('ModelManager - Silero VAD Download', () => {
       progressUpdates = [];
       modelPath = await manager.ensureModel(modelId, (progress) => {
         progressUpdates.push({
-          percentage: progress.percentage,
-          currentFile: progress.currentFile,
+          ...(progress.percentage !== undefined && { percentage: progress.percentage }),
+          ...(progress.currentFile !== undefined && { currentFile: progress.currentFile }),
         });
       });
     });

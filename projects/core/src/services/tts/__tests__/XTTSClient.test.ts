@@ -224,7 +224,7 @@ describe("XTTSClient", () => {
 
       expect(capturedBody).toBeDefined();
       const parsed = JSON.parse(capturedBody!) as Record<string, unknown>;
-      expect(parsed.speed).toBe(1.5);
+      expect(parsed["speed"]).toBe(1.5);
     });
 
     it("handles latency warning in response", async () => {

@@ -62,6 +62,8 @@ export interface TranscriptionPipelineEvent {
 export interface TranslationPipelineEvent {
   readonly type: "translation";
   readonly timestamp: number;
+  /** Unique ID for this translation event, used to correlate with synthesis events */
+  readonly id: string;
   readonly targetLanguage: TargetLanguage;
   readonly result: TranslationResult;
   readonly isPartial: boolean;
@@ -97,6 +99,15 @@ export interface ErrorPipelineEvent {
 }
 
 /**
+ * Throughput metrics for pipeline processing.
+ */
+export interface ThroughputMetrics {
+  readonly segmentsPerSecond: number;
+  readonly translationsPerSecond: number;
+  readonly synthesesPerSecond: number;
+}
+
+/**
  * Metrics event emitted periodically with performance data.
  */
 export interface MetricsPipelineEvent {
@@ -107,6 +118,12 @@ export interface MetricsPipelineEvent {
   readonly languageStatus: ReadonlyMap<TargetLanguage, LanguageStatus>;
   /** True if any threshold was exceeded */
   readonly thresholdViolation: boolean;
+  /** Throughput metrics (segments, translations, syntheses per second) */
+  readonly throughput?: ThroughputMetrics;
+  /** Error rates per language (0.0 to 1.0) */
+  readonly errorRates?: ReadonlyMap<TargetLanguage, number>;
+  /** Current audio buffer size in bytes */
+  readonly audioBufferSizeBytes?: number;
 }
 
 /**

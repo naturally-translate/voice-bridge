@@ -42,12 +42,12 @@ export const TRANSFORMERS_CACHE_DIR = resolve(MODELS_DIR, "transformers-cache");
  * These tests are slow (5-10 min) and require network access.
  */
 export const RUN_INTEGRATION_TESTS =
-  process.env.RUN_INTEGRATION_TESTS === "true";
+  process.env["RUN_INTEGRATION_TESTS"] === "true";
 
 /**
  * Helper to conditionally describe integration test suites.
  * Skips the suite unless RUN_INTEGRATION_TESTS is enabled.
  */
-export const describeIntegration = RUN_INTEGRATION_TESTS
-  ? describe
-  : describe.skip;
+export const describeIntegration: typeof describe = (
+  RUN_INTEGRATION_TESTS ? describe : describe.skip
+) as typeof describe;

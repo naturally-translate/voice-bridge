@@ -8,6 +8,7 @@ export const PipelineErrorCode = {
   LANGUAGE_PROCESSING: "PIPELINE_003",
   STAGE_FAILED: "PIPELINE_004",
   THRESHOLD_EXCEEDED: "PIPELINE_005",
+  INVALID_INPUT: "PIPELINE_006",
 } as const;
 
 export type PipelineErrorCodeType =
@@ -115,5 +116,22 @@ export class ThresholdExceededError extends PipelineError {
       { metric, value, threshold, unit }
     );
     this.name = "ThresholdExceededError";
+  }
+}
+
+/**
+ * Error thrown when invalid input is provided to the pipeline.
+ */
+export class InvalidInputError extends PipelineError {
+  constructor(
+    public readonly inputType: string,
+    reason: string
+  ) {
+    super(
+      PipelineErrorCode.INVALID_INPUT,
+      `Invalid ${inputType}: ${reason}`,
+      { inputType, reason }
+    );
+    this.name = "InvalidInputError";
   }
 }
