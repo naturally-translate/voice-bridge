@@ -62,6 +62,8 @@ export interface TranscriptionPipelineEvent {
 export interface TranslationPipelineEvent {
   readonly type: "translation";
   readonly timestamp: number;
+  /** Unique ID for this translation event, used to correlate with synthesis events */
+  readonly id: string;
   readonly targetLanguage: TargetLanguage;
   readonly result: TranslationResult;
   readonly isPartial: boolean;
