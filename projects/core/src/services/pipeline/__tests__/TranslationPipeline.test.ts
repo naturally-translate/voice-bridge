@@ -621,3 +621,520 @@ describe("Memory Tracking", () => {
     expect(snapshot.violations.some((v) => v.type === "memory")).toBe(true);
   });
 });
+
+// =============================================================================
+// End-to-End Pipeline Tests with Mocked Services
+// =============================================================================
+
+import {
+  TranslationPipeline,
+  createTranslationPipeline,
+} from "../TranslationPipeline.js";
+import type { PipelineEvent } from "../PipelineTypes.js";
+import { createMockVAD, MockVAD } from "./__mocks__/MockVAD.js";
+import { createMockASR, MockASR } from "./__mocks__/MockASR.js";
+import {
+  createMockTranslationPool,
+  MockTranslationPool,
+} from "./__mocks__/MockTranslationPool.js";
+import { createMockTTSPool, MockTTSPool } from "./__mocks__/MockTTSPool.js";
+import { createMockXTTSClient } from "./__mocks__/MockXTTSClient.js";
+import type { XTTSClient } from "../../tts/XTTSClient.js";
+import {
+  generateSpeechLike,
+  generateLongMixedAudio,
+  SAMPLE_RATE,
+} from "../../../__fixtures__/audio/generateFixtures.js";
+
+/**
+ * Helper to create a pipeline with mocked dependencies for testing.
+ */
+async function createTestPipeline(options?: {
+  vadOptions?: Parameters<typeof createMockVAD>[0];
+  asrOptions?: Parameters<typeof createMockASR>[0];
+  translationOptions?: Parameters<typeof createMockTranslationPool>[0];
+  ttsOptions?: Parameters<typeof createMockTTSPool>[0];
+}): Promise<{
+  pipeline: TranslationPipeline;
+  mocks: {
+    vad: MockVAD;
+    asr: MockASR;
+    translationPool: MockTranslationPool;
+    ttsPool: MockTTSPool;
+  };
+}> {
+  const vad = createMockVAD(options?.vadOptions);
+  const asr = createMockASR(options?.asrOptions);
+  const translationPool = createMockTranslationPool(options?.translationOptions);
+  const ttsPool = createMockTTSPool(options?.ttsOptions);
+
+  // Initialize mocks
+  await vad.initialize();
+  await asr.initialize();
+  await translationPool.initialize();
+  await ttsPool.initialize();
+
+  // Create pipeline
+  const pipeline = createTranslationPipeline({
+    sessionId: "test-e2e",
+    config: {
+      enableProsodyMatching: false, // Disable for simpler testing
+      targetLanguages: ["es", "zh", "ko"],
+    },
+  });
+
+  // Inject mocked dependencies by accessing private field
+  // This is a test-only pattern - in production, use proper DI
+  const pipelineAny = pipeline as unknown as {
+    state: string;
+    deps: {
+      vad: MockVAD;
+      asr: MockASR;
+      translationPool: MockTranslationPool;
+      ttsPool: MockTTSPool;
+      xttsClient: ReturnType<typeof createMockXTTSClient>;
+    };
+    context: ReturnType<typeof createPipelineContext>;
+    startMetricsInterval: () => void;
+  };
+
+  // Create context
+  const xttsClient = createMockXTTSClient();
+
+  const context = createPipelineContext({
+    sessionId: "test-e2e",
+    config: {
+      enableProsodyMatching: false,
+      targetLanguages: ["es", "zh", "ko"],
+    },
+    xttsClient: xttsClient as unknown as XTTSClient,
+  });
+  context.start();
+
+  // Inject dependencies
+  pipelineAny.state = "ready";
+  pipelineAny.deps = {
+    vad,
+    asr,
+    translationPool,
+    ttsPool,
+    xttsClient,
+  };
+  pipelineAny.context = context;
+
+  return {
+    pipeline,
+    mocks: { vad, asr, translationPool, ttsPool },
+  };
+}
+
+/**
+ * Collects all events from a pipeline processing call.
+ */
+async function collectEvents(
+  iterator: AsyncIterableIterator<PipelineEvent>
+): Promise<PipelineEvent[]> {
+  const events: PipelineEvent[] = [];
+  for await (const event of iterator) {
+    events.push(event);
+  }
+  return events;
+}
+
+describe("TranslationPipeline End-to-End", () => {
+  describe("processAudio() with sample audio", () => {
+    it("processes speech-like audio through full pipeline", async () => {
+      const { pipeline } = await createTestPipeline();
+
+      // Generate 1 second of speech-like audio
+      const audio = generateSpeechLike(1000);
+
+      const events = await collectEvents(
+        pipeline.processAudio(audio, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+
+      // Should have VAD, transcription, translation, and synthesis events
+      const vadEvents = events.filter((e) => e.type === "vad");
+      const transcriptionEvents = events.filter((e) => e.type === "transcription");
+      const translationEvents = events.filter((e) => e.type === "translation");
+      const synthesisEvents = events.filter((e) => e.type === "synthesis");
+
+      expect(vadEvents.length).toBeGreaterThan(0);
+      expect(transcriptionEvents.length).toBeGreaterThan(0);
+      // Should have translations for all 3 languages
+      expect(translationEvents.length).toBe(3);
+      // Should have synthesis for all 3 languages
+      expect(synthesisEvents.length).toBe(3);
+
+      await pipeline.shutdown();
+    });
+
+    it("handles multiple audio chunks in streaming fashion", async () => {
+      const { pipeline } = await createTestPipeline();
+
+      // Generate 3 seconds of mixed audio
+      const { samples } = generateLongMixedAudio(3000, 1000, 500);
+
+      // Process in 500ms chunks (simulating real-time streaming)
+      const chunkSize = Math.floor(SAMPLE_RATE * 0.5);
+      const allEvents: PipelineEvent[] = [];
+
+      for (let offset = 0; offset < samples.length; offset += chunkSize) {
+        const chunk = samples.slice(offset, offset + chunkSize);
+        const events = await collectEvents(
+          pipeline.processAudio(chunk, { sampleRate: SAMPLE_RATE, channels: 1 })
+        );
+        allEvents.push(...events);
+      }
+
+      // Should have accumulated events from multiple chunks
+      expect(allEvents.length).toBeGreaterThan(0);
+
+      // At least some VAD events
+      const vadEvents = allEvents.filter((e) => e.type === "vad");
+      expect(vadEvents.length).toBeGreaterThan(0);
+
+      await pipeline.shutdown();
+    });
+
+    it("extracts correct segment audio from accumulated buffer", async () => {
+      const { pipeline } = await createTestPipeline();
+
+      // Process two 500ms chunks
+      const chunk1 = generateSpeechLike(500);
+      const chunk2 = generateSpeechLike(500);
+
+      // First chunk
+      const events1 = await collectEvents(
+        pipeline.processAudio(chunk1, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+
+      // Second chunk
+      const events2 = await collectEvents(
+        pipeline.processAudio(chunk2, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+
+      // Both should produce VAD events
+      const vadEvents1 = events1.filter((e) => e.type === "vad");
+      const vadEvents2 = events2.filter((e) => e.type === "vad");
+
+      expect(vadEvents1.length).toBeGreaterThan(0);
+      expect(vadEvents2.length).toBeGreaterThan(0);
+
+      // The second chunk's segment should have correct timing
+      // (not sliced from empty buffer due to absolute timestamp bug)
+      for (const event of vadEvents2) {
+        if (event.type === "vad" && event.audio) {
+          // Audio should not be empty - this verifies the accumulator fix
+          expect(event.audio.length).toBeGreaterThan(0);
+        }
+      }
+
+      await pipeline.shutdown();
+    });
+  });
+
+  describe("fire-and-forget language isolation", () => {
+    it("continues processing when one language fails translation", async () => {
+      const { pipeline } = await createTestPipeline({
+        translationOptions: {
+          failingLanguages: ["zh"], // Chinese will fail
+        },
+      });
+
+      const audio = generateSpeechLike(500);
+      const events = await collectEvents(
+        pipeline.processAudio(audio, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+
+      // Should have translation events for es and ko
+      const translationEvents = events.filter((e) => e.type === "translation");
+      const esTranslation = translationEvents.find(
+        (e) => e.type === "translation" && e.targetLanguage === "es"
+      );
+      const koTranslation = translationEvents.find(
+        (e) => e.type === "translation" && e.targetLanguage === "ko"
+      );
+
+      expect(esTranslation).toBeDefined();
+      expect(koTranslation).toBeDefined();
+
+      // Should have error event for zh
+      const errorEvents = events.filter((e) => e.type === "error");
+      const zhError = errorEvents.find(
+        (e) => e.type === "error" && e.targetLanguage === "zh"
+      );
+      expect(zhError).toBeDefined();
+      expect(zhError?.recoverable).toBe(true);
+
+      await pipeline.shutdown();
+    });
+
+    it("continues processing when one language fails TTS", async () => {
+      const { pipeline } = await createTestPipeline({
+        ttsOptions: {
+          failingLanguages: ["ko"], // Korean TTS will fail
+        },
+      });
+
+      const audio = generateSpeechLike(500);
+      const events = await collectEvents(
+        pipeline.processAudio(audio, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+
+      // Should have synthesis events for es and zh
+      const synthesisEvents = events.filter((e) => e.type === "synthesis");
+      const esSynthesis = synthesisEvents.find(
+        (e) => e.type === "synthesis" && e.targetLanguage === "es"
+      );
+      const zhSynthesis = synthesisEvents.find(
+        (e) => e.type === "synthesis" && e.targetLanguage === "zh"
+      );
+
+      expect(esSynthesis).toBeDefined();
+      expect(zhSynthesis).toBeDefined();
+
+      // Should have error event for ko
+      const errorEvents = events.filter((e) => e.type === "error");
+      const koError = errorEvents.find(
+        (e) => e.type === "error" && e.targetLanguage === "ko"
+      );
+      expect(koError).toBeDefined();
+
+      await pipeline.shutdown();
+    });
+
+    it("handles multiple language failures gracefully", async () => {
+      const { pipeline } = await createTestPipeline({
+        translationOptions: {
+          failingLanguages: ["es", "ko"], // Two languages fail
+        },
+      });
+
+      const audio = generateSpeechLike(500);
+      const events = await collectEvents(
+        pipeline.processAudio(audio, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+
+      // Should still have translation for zh
+      const translationEvents = events.filter((e) => e.type === "translation");
+      const zhTranslation = translationEvents.find(
+        (e) => e.type === "translation" && e.targetLanguage === "zh"
+      );
+      expect(zhTranslation).toBeDefined();
+
+      // Should have errors for es and ko
+      const errorEvents = events.filter((e) => e.type === "error");
+      expect(errorEvents.length).toBeGreaterThanOrEqual(2);
+
+      await pipeline.shutdown();
+    });
+  });
+
+  describe("latency benchmarking", () => {
+    it("records end-to-end latency within target threshold", async () => {
+      const { pipeline } = await createTestPipeline({
+        // Add small latencies to simulate realistic timing
+        vadOptions: { latencyMs: 10 },
+        asrOptions: { latencyMs: 20 },
+        translationOptions: { latencyMs: 15 },
+        ttsOptions: { latencyMs: 25 },
+      });
+
+      const audio = generateSpeechLike(500);
+
+      const startTime = Date.now();
+      await collectEvents(
+        pipeline.processAudio(audio, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+      const endTime = Date.now();
+
+      const totalLatency = endTime - startTime;
+
+      // With mocked services, total should be under 500ms even with simulated latencies
+      expect(totalLatency).toBeLessThan(500);
+
+      // Check metrics recorded latency
+      const metrics = pipeline.getMetrics();
+      const snapshot = metrics.getSnapshot();
+
+      expect(snapshot.latency.vad).toBeGreaterThan(0);
+      expect(snapshot.latency.asr).toBeGreaterThan(0);
+
+      // Benchmark assertions - latency targets from Phase 5 spec
+      // Target: <4s end-to-end (with mocks, should be well under)
+      expect(totalLatency).toBeLessThan(4000);
+
+      await pipeline.shutdown();
+    });
+
+    it("tracks per-language translation and synthesis latency", async () => {
+      const { pipeline } = await createTestPipeline({
+        translationOptions: { latencyMs: 10 },
+        ttsOptions: { latencyMs: 20 },
+      });
+
+      const audio = generateSpeechLike(500);
+      await collectEvents(
+        pipeline.processAudio(audio, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+
+      const metrics = pipeline.getMetrics();
+      const snapshot = metrics.getSnapshot();
+
+      // All languages should have latency recorded
+      expect(snapshot.latency.translation.es).toBeGreaterThan(0);
+      expect(snapshot.latency.translation.zh).toBeGreaterThan(0);
+      expect(snapshot.latency.translation.ko).toBeGreaterThan(0);
+
+      expect(snapshot.latency.synthesis.es).toBeGreaterThan(0);
+      expect(snapshot.latency.synthesis.zh).toBeGreaterThan(0);
+      expect(snapshot.latency.synthesis.ko).toBeGreaterThan(0);
+
+      await pipeline.shutdown();
+    });
+  });
+
+  describe("memory tracking", () => {
+    it("reports memory usage during processing", async () => {
+      const { pipeline } = await createTestPipeline();
+
+      // Get baseline memory
+      const metricsBefore = pipeline.getMetrics();
+      const snapshotBefore = metricsBefore.getSnapshot();
+      const memoryBefore = snapshotBefore.memoryMB;
+
+      // Process some audio
+      const audio = generateSpeechLike(2000);
+      await collectEvents(
+        pipeline.processAudio(audio, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+
+      const metricsAfter = pipeline.getMetrics();
+      const snapshotAfter = metricsAfter.getSnapshot();
+      const memoryAfter = snapshotAfter.memoryMB;
+
+      // Memory should be reported and reasonable
+      expect(memoryBefore).toBeGreaterThan(0);
+      expect(memoryAfter).toBeGreaterThan(0);
+
+      // Verify we're under the 10GB target from Phase 5 spec
+      // (should be well under with mocks)
+      expect(memoryAfter).toBeLessThan(10000);
+
+      await pipeline.shutdown();
+    });
+  });
+
+  describe("pipeline lifecycle", () => {
+    it("can reset and process new session", async () => {
+      const { pipeline } = await createTestPipeline();
+
+      // First session
+      const audio1 = generateSpeechLike(500);
+      const events1 = await collectEvents(
+        pipeline.processAudio(audio1, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+      expect(events1.length).toBeGreaterThan(0);
+
+      // Reset
+      pipeline.reset();
+
+      // Second session
+      const audio2 = generateSpeechLike(500);
+      const events2 = await collectEvents(
+        pipeline.processAudio(audio2, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+      expect(events2.length).toBeGreaterThan(0);
+
+      await pipeline.shutdown();
+    });
+
+    it("rejects operations after shutdown", async () => {
+      const { pipeline } = await createTestPipeline();
+
+      await pipeline.shutdown();
+
+      const audio = generateSpeechLike(500);
+
+      // Should throw after shutdown
+      await expect(async () => {
+        for await (const _ of pipeline.processAudio(audio)) {
+          // Should not reach here
+        }
+      }).rejects.toThrow();
+    });
+  });
+
+  describe("event correctness", () => {
+    it("emits events in correct order: vad → transcription → translation → synthesis", async () => {
+      const { pipeline } = await createTestPipeline();
+
+      const audio = generateSpeechLike(500);
+      const events = await collectEvents(
+        pipeline.processAudio(audio, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+
+      // Find first occurrence of each event type
+      const firstVad = events.findIndex((e) => e.type === "vad");
+      const firstTranscription = events.findIndex((e) => e.type === "transcription");
+      const firstTranslation = events.findIndex((e) => e.type === "translation");
+      const firstSynthesis = events.findIndex((e) => e.type === "synthesis");
+
+      // VAD should come before transcription
+      expect(firstVad).toBeLessThan(firstTranscription);
+
+      // Transcription should come before translation
+      expect(firstTranscription).toBeLessThan(firstTranslation);
+
+      // Translation should come before synthesis
+      expect(firstTranslation).toBeLessThan(firstSynthesis);
+
+      await pipeline.shutdown();
+    });
+
+    it("includes segment audio in VAD events", async () => {
+      const { pipeline } = await createTestPipeline();
+
+      const audio = generateSpeechLike(500);
+      const events = await collectEvents(
+        pipeline.processAudio(audio, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+
+      const vadEvents = events.filter((e) => e.type === "vad" && !e.isPartial);
+
+      for (const event of vadEvents) {
+        if (event.type === "vad") {
+          // Non-partial VAD events should include audio
+          expect(event.audio).toBeDefined();
+          expect(event.audio?.length).toBeGreaterThan(0);
+        }
+      }
+
+      await pipeline.shutdown();
+    });
+
+    it("includes synthesized audio in synthesis events", async () => {
+      const { pipeline } = await createTestPipeline();
+
+      const audio = generateSpeechLike(500);
+      const events = await collectEvents(
+        pipeline.processAudio(audio, { sampleRate: SAMPLE_RATE, channels: 1 })
+      );
+
+      const synthesisEvents = events.filter((e) => e.type === "synthesis");
+
+      for (const event of synthesisEvents) {
+        if (event.type === "synthesis") {
+          expect(event.result).toBeDefined();
+          expect(event.result.audio).toBeDefined();
+          expect(event.result.audio.length).toBeGreaterThan(0);
+          expect(event.result.sampleRate).toBeGreaterThan(0);
+          expect(event.result.duration).toBeGreaterThan(0);
+        }
+      }
+
+      await pipeline.shutdown();
+    });
+  });
+});

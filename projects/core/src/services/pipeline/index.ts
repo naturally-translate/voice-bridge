@@ -7,6 +7,9 @@ export {
   TranslationPipeline,
   createTranslationPipeline,
   type PipelineInitOptions,
+  type MetricsEventListener,
+  type ThresholdAlertEvent,
+  type ThresholdAlertListener,
 } from "./TranslationPipeline.js";
 
 // Context

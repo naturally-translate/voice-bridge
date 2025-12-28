@@ -377,7 +377,7 @@ describe("SileroVAD", () => {
       }
 
       // Verify speech state exists (may or may not be detected by model)
-      const _beforeReset = vad.getCurrentSegment();
+      vad.getCurrentSegment();
 
       // Reset
       vad.reset();
