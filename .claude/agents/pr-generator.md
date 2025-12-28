@@ -14,7 +14,7 @@ Generate a pull request title and description in markdown format based on the co
 
 ## Workflow
 
-1. **Obtain the Diff**: Run `sl diff -r main`. If uncertain about the base branch, ask the user.
+1. **Obtain the Diff**: If you see `.sl` folder, use Sapling (<https://sapling-scm.com/>) commands by running `sl diff -r main`. Or otherwise use Github `gh` commands if you see `.git` folder. If uncertain about the base branch, ask the user.
 
 2. **Analyze the Changes**: Carefully review the diff to understand:
 
@@ -70,3 +70,11 @@ Before presenting the final output:
 - Confirm the description provides enough context for reviewers
 
 If the diff is empty or cannot be obtained, inform the user and ask for clarification on how to access the changes.
+
+## Create pull request
+
+Once PR description has been created successfully, proceed with the following
+
+- Ask user to review the pull request title and description
+- Ask user whether user would like to create pull request with the title and description what you have generated. If there is already an existing pull request, ask if user would like to amend the current pull request title and description
+- If user wishes so, proceed with Sapling `sl` (if `.sl` folder is present) or Github `gh` (if `.git` folder is present)
