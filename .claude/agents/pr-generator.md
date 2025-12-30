@@ -14,7 +14,7 @@ Generate a pull request title and description in markdown format based on the co
 
 ## Workflow
 
-1. **Obtain the Diff**: Run `sl diff -r main`. If uncertain about the base branch, ask the user.
+1. **Obtain the Diff**: If you see `.sl` folder, use Sapling (<https://sapling-scm.com/>) commands by running `sl diff -r main`. Or otherwise use Github `gh` commands if you see `.git` folder. If uncertain about the base branch, ask the user.
 
 2. **Analyze the Changes**: Carefully review the diff to understand:
 
